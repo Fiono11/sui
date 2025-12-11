@@ -101,7 +101,6 @@ members = [
   "crates/sui-data-ingestion",
   "crates/sui-data-ingestion-core",
   "crates/sui-data-store",
-  "crates/sui-deepbook-indexer",
   "crates/sui-default-config",
   "crates/sui-display",
   "crates/sui-e2e-tests",
