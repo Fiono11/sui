@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::client_commands::{
-    SuiClientCommands, USER_AGENT, check_for_unpublished_deps, load_root_pkg_for_publish_upgrade,
+    SuiClientCommands, check_for_unpublished_deps, load_root_pkg_for_publish_upgrade,
     pkg_tree_shake,
 };
 use crate::fire_drill::{FireDrill, run_fire_drill};
@@ -75,7 +75,6 @@ use sui_package_alt::{SuiFlavor, find_environment};
 use sui_pg_db::DbArgs;
 use sui_pg_db::temp::{LocalDatabase, get_available_port};
 use sui_protocol_config::Chain;
-use sui_replay_2 as SR2;
 use sui_sdk::sui_client_config::{SuiClientConfig, SuiEnv};
 use sui_sdk::wallet_context::WalletContext;
 use sui_swarm::memory::Swarm;
@@ -84,7 +83,7 @@ use sui_swarm_config::network_config::NetworkConfig;
 use sui_swarm_config::network_config_builder::ConfigBuilder;
 use sui_swarm_config::node_config_builder::FullnodeConfigBuilder;
 use sui_types::base_types::{ObjectID, SuiAddress};
-use sui_types::crypto::{SignatureScheme, SuiKeyPair, ToFromBytes};
+use sui_types::crypto::{SignatureScheme, SuiKeyPair};
 use sui_types::digests::ChainIdentifier;
 use tracing::info;
 use url::Url;
@@ -380,15 +379,6 @@ pub enum SuiCommand {
         #[clap(subcommand)]
         command: AnalyzeTraceCommand,
     },
-
-    #[clap(name = "replay")]
-    ReplayTransaction {
-        #[clap(flatten)]
-        config: SuiEnvConfig,
-
-        #[command(flatten)]
-        replay_config: SR2::ReplayConfigStable,
-    },
 }
 
 impl SuiCommand {
@@ -658,42 +648,6 @@ impl SuiCommand {
                 output_dir,
                 command,
             } => command.execute(path, output_dir).await,
-            SuiCommand::ReplayTransaction {
-                config,
-                replay_config,
-            } => {
-                let config_path = config
-                    .config
-                    .unwrap_or(sui_config_dir()?.join(SUI_CLIENT_CONFIG));
-                prompt_if_no_config(&config_path, /* accept_defaults */ false).await?;
-                let mut context = WalletContext::new(&config_path)?;
-                if let Some(env_override) = config.env {
-                    context = context.with_env_override(env_override);
-                }
-
-                let node = get_replay_node(&context).await?;
-                let file_config = SR2::load_config_file()?;
-                let stable_config = SR2::merge_configs(replay_config, file_config);
-                let experimental_config = SR2::ReplayConfigExperimental {
-                    node,
-                    ..Default::default()
-                };
-
-                let artifact_path =
-                    SR2::handle_replay_config(&stable_config, &experimental_config, USER_AGENT)
-                        .await?;
-
-                if let Some(digest) = &stable_config.digest {
-                    SR2::print_effects_or_fork(
-                        digest,
-                        &artifact_path,
-                        stable_config.show_effects,
-                        &mut std::io::stdout(),
-                    )?;
-                }
-
-                Ok(())
-            }
         }
     }
 }

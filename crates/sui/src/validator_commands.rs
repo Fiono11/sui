@@ -38,6 +38,7 @@ use shared_crypto::intent::{Intent, IntentMessage, IntentScope};
 use sui_json_rpc_types::{
     SuiObjectDataOptions, SuiTransactionBlockResponse, SuiTransactionBlockResponseOptions,
 };
+use sui_keys::keystore::AccountKeystore;
 use sui_keys::{
     key_derive::generate_new_key,
     keypair_file::{
@@ -45,7 +46,6 @@ use sui_keys::{
         write_authority_keypair_to_file, write_keypair_to_file,
     },
 };
-use sui_keys::{keypair_file::read_key, keystore::AccountKeystore};
 use sui_sdk::SuiClient;
 use sui_sdk::wallet_context::WalletContext;
 use sui_types::crypto::{AuthorityKeyPair, NetworkKeyPair, SignatureScheme, SuiKeyPair};
@@ -529,27 +529,6 @@ impl SuiValidatorCommand {
                 }
             }
         })
-    }
-}
-
-fn check_address(
-    active_address: SuiAddress,
-    validator_address: Option<SuiAddress>,
-    print_unsigned_transaction_only: bool,
-) -> Result<SuiAddress, anyhow::Error> {
-    if !print_unsigned_transaction_only {
-        if let Some(validator_address) = validator_address
-            && validator_address != active_address
-        {
-            bail!(
-                "`--validator-address` must be the same as the current active address: {}",
-                active_address
-            );
-        }
-        Ok(active_address)
-    } else {
-        validator_address
-            .ok_or_else(|| anyhow!("--validator-address must be provided when `print_unsigned_transaction_only` is true"))
     }
 }
 

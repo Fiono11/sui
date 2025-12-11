@@ -162,8 +162,6 @@ members = [
   "crates/sui-proc-macros",
   "crates/sui-protocol-config",
   "crates/sui-protocol-config-macros",
-  "crates/sui-replay",
-  "crates/sui-replay-2",
   "crates/sui-rpc-api",
   "crates/sui-rpc-benchmark",
   "crates/sui-rpc-loadgen",
@@ -733,8 +731,6 @@ sui-pg-db = { path = "crates/sui-pg-db" }
 sui-proc-macros = { path = "crates/sui-proc-macros" }
 sui-protocol-config = { path = "crates/sui-protocol-config" }
 sui-protocol-config-macros = { path = "crates/sui-protocol-config-macros" }
-sui-replay = { path = "crates/sui-replay" }
-sui-replay-2 = { path = "crates/sui-replay-2" }
 sui-rpc-loadgen = { path = "crates/sui-rpc-loadgen" }
 sui-sdk = { path = "crates/sui-sdk" }
 sui-simulator = { path = "crates/sui-simulator" }

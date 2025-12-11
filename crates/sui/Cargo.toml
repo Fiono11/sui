@@ -82,7 +82,6 @@ move-trace-format.workspace = true
 move-bytecode-source-map.workspace = true
 mysten-common.workspace = true
 test-cluster.workspace = true
-sui-replay-2.workspace = true
 
 fastcrypto.workspace = true
 fastcrypto-zkp.workspace = true
@@ -155,5 +154,4 @@ tracing = [
     "sui-types/tracing",
     "sui-execution/tracing",
     "sui-move/tracing",
-    "sui-replay-2/tracing",
 ]

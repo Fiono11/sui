@@ -18,7 +18,6 @@ use std::{collections::BTreeMap, env, sync::Arc};
 use sui_config::genesis::Genesis;
 use sui_core::authority_client::AuthorityAPI;
 use sui_protocol_config::Chain;
-use sui_replay::{ReplayToolCommand, execute_replay_command};
 use sui_sdk::{SuiClient, SuiClientBuilder, rpc_types::SuiTransactionBlockResponseOptions};
 use sui_types::messages_consensus::ConsensusTransaction;
 use telemetry_subscribers::TracingHandle;
@@ -342,32 +341,6 @@ pub enum ToolCommand {
         /// Defaults to 3 retries. Set to 0 to disable retries.
         #[clap(long = "max-retries", default_value = "3")]
         max_retries: usize,
-    },
-
-    #[clap(name = "replay")]
-    Replay {
-        #[arg(long = "rpc")]
-        rpc_url: Option<String>,
-        #[arg(long = "safety-checks")]
-        safety_checks: bool,
-        #[arg(long = "authority")]
-        use_authority: bool,
-        #[arg(
-            long = "cfg-path",
-            short,
-            help = "Path to the network config file. This should be specified when rpc_url is not present. \
-            If not specified we will use the default network config file at ~/.sui-replay/network-config.yaml"
-        )]
-        cfg_path: Option<PathBuf>,
-        #[arg(
-            long,
-            help = "The name of the chain to replay from, could be one of: mainnet, testnet, devnet.\
-            When rpc_url is not specified, this is used to load the corresponding config from the network config file.\
-            If not specified, mainnet will be used by default"
-        )]
-        chain: Option<String>,
-        #[command(subcommand)]
-        cmd: ReplayToolCommand,
     },
 
     /// Ask all validators to sign a transaction through AuthorityAggregator.
@@ -969,17 +942,6 @@ impl ToolCommand {
                     max_retries,
                 )
                 .await?;
-            }
-            ToolCommand::Replay {
-                rpc_url,
-                safety_checks,
-                cmd,
-                use_authority,
-                cfg_path,
-                chain,
-            } => {
-                execute_replay_command(rpc_url, safety_checks, use_authority, cfg_path, chain, cmd)
-                    .await?;
             }
             ToolCommand::SignTransaction {
                 genesis,
