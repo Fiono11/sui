@@ -80,6 +80,10 @@ impl TransactionKind {
                     inner: ProgrammableTransaction { native: pt, scope },
                 }))
             }
+            K::NativeTransfer(_) => {
+                // NativeTransfer is not supported in GraphQL API
+                None
+            }
         }
     }
 }

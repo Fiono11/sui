@@ -498,6 +498,9 @@ mod checked {
             TransactionKind::ProgrammableSystemTransaction(_) => {
                 panic!("ProgrammableSystemTransaction should not exist in execution layer v0");
             }
+            TransactionKind::NativeTransfer(_) => {
+                panic!("NativeTransfer is not supported in execution layer v0");
+            }
         }
     }
 

@@ -323,7 +323,9 @@ mod checked {
                     max_budget: self.cost_table.max_gas_budget,
                 });
             }
-            if gas_budget < self.cost_table.min_transaction_cost {
+            // Skip minimum transaction cost check for unmetered transactions
+            // (they don't charge gas, so minimum cost requirement doesn't apply)
+            if !self.is_unmetered() && gas_budget < self.cost_table.min_transaction_cost {
                 return Err(UserInputError::GasBudgetTooLow {
                     gas_budget,
                     min_budget: self.cost_table.min_transaction_cost,

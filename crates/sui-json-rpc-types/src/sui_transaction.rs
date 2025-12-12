@@ -425,6 +425,8 @@ pub enum SuiTransactionBlockKind {
     ConsensusCommitPrologueV4(SuiConsensusCommitPrologueV4),
 
     ProgrammableSystemTransaction(SuiProgrammableTransactionBlock),
+    /// A native transfer transaction that bypasses Move VM and doesn't charge gas
+    NativeTransfer(SuiNativeTransfer),
     // .. more transaction types go here
 }
 
@@ -501,6 +503,9 @@ impl Display for SuiTransactionBlockKind {
             Self::EndOfEpochTransaction(_) => {
                 writeln!(writer, "Transaction Kind: End of Epoch Transaction")?;
             }
+            Self::NativeTransfer(_) => {
+                writeln!(writer, "Transaction Kind: Native Transfer")?;
+            }
         }
         write!(f, "{}", writer)
     }
@@ -556,6 +561,11 @@ impl SuiTransactionBlockKind {
                 // This case is handled separately by the callers
                 unreachable!()
             }
+            TransactionKind::NativeTransfer(transfer) => Self::NativeTransfer(SuiNativeTransfer {
+                coin: transfer.coin.into(),
+                recipient: transfer.recipient,
+                amount: transfer.amount,
+            }),
             TransactionKind::AuthenticatorStateUpdate(update) => {
                 Self::AuthenticatorStateUpdate(SuiAuthenticatorStateUpdate {
                     epoch: update.epoch,
@@ -692,6 +702,7 @@ impl SuiTransactionBlockKind {
             Self::AuthenticatorStateUpdate(_) => "AuthenticatorStateUpdate",
             Self::RandomnessStateUpdate(_) => "RandomnessStateUpdate",
             Self::EndOfEpochTransaction(_) => "EndOfEpochTransaction",
+            Self::NativeTransfer(_) => "NativeTransfer",
         }
     }
 }
@@ -1768,6 +1779,16 @@ pub struct SuiRandomnessStateUpdate {
     #[serde_as(as = "BigInt<u64>")]
     pub randomness_round: u64,
     pub random_bytes: Vec<u8>,
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct SuiNativeTransfer {
+    pub coin: SuiObjectRef,
+    pub recipient: SuiAddress,
+    #[schemars(with = "BigInt<u64>")]
+    #[serde_as(as = "BigInt<u64>")]
+    pub amount: u64,
 }
 
 #[serde_as]

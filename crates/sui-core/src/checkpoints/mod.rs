@@ -2009,6 +2009,9 @@ impl CheckpointBuilder {
                     TransactionKind::ProgrammableSystemTransaction(_) => {
                         // settlement transactions are added by checkpoint builder
                     }
+                    TransactionKind::NativeTransfer(_) => {
+                        // NativeTransfer transactions are handled normally
+                    }
                     TransactionKind::ChangeEpoch(_)
                     | TransactionKind::Genesis(_)
                     | TransactionKind::EndOfEpochTransaction(_) => {

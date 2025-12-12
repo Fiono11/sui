@@ -16,9 +16,9 @@ mod checked {
     use sui_types::executable_transaction::VerifiedExecutableTransaction;
     use sui_types::metrics::BytecodeVerifierMetrics;
     use sui_types::transaction::{
-        CheckedInputObjects, InputObjectKind, InputObjects, ObjectReadResult, ObjectReadResultKind,
-        ReceivingObjectReadResult, ReceivingObjects, SharedObjectMutability, TransactionData,
-        TransactionDataAPI, TransactionKind,
+        CheckedInputObjects, Command, InputObjectKind, InputObjects, ObjectReadResult,
+        ObjectReadResultKind, ReceivingObjectReadResult, ReceivingObjects, SharedObjectMutability,
+        TransactionData, TransactionDataAPI, TransactionKind,
     };
     use sui_types::{
         SUI_AUTHENTICATOR_STATE_OBJECT_ID, SUI_CLOCK_OBJECT_ID, SUI_CLOCK_OBJECT_SHARED_VERSION,
@@ -93,6 +93,8 @@ mod checked {
             metrics,
             verifier_signing_config,
         )?;
+        // Check that only SUI coins are used in coin operations
+        check_only_sui_coins_allowed(transaction, &input_objects, receiving_objects)?;
 
         Ok((gas_status, input_objects.into_checked()))
     }
@@ -370,9 +372,10 @@ mod checked {
                 })?;
                 gas_objects.push(obj);
             }
-            // Skip gas balance check for address balance payments
-            // We reserve gas budget in advance
-            if !gas_paid_from_address_balance {
+            // Skip gas balance check for address balance payments and unmetered transactions
+            // We reserve gas budget in advance for address payments, and unmetered transactions
+            // don't charge gas so balance check is not needed
+            if !gas_paid_from_address_balance && !tx_kind.is_unmetered() {
                 gas_status.check_gas_balance(&gas_objects, gas_budget)?;
             }
             Ok(gas_status)
@@ -644,6 +647,83 @@ mod checked {
                 return Err(err);
             }
         };
+
+        Ok(())
+    }
+
+    /// Check that only SUI coins are used in transactions that are restricted to coin operations.
+    /// This validates that all coin objects (input and receiving) are SUI coins, not other coin types.
+    fn check_only_sui_coins_allowed(
+        transaction: &TransactionData,
+        input_objects: &InputObjects,
+        receiving_objects: &ReceivingObjects,
+    ) -> UserInputResult<()> {
+        // Only check ProgrammableTransaction, skip system transactions
+        let TransactionKind::ProgrammableTransaction(pt) = transaction.kind() else {
+            return Ok(());
+        };
+
+        // Check if this transaction is restricted to coin operations only
+        // (i.e., only TransferObjects, SplitCoins, MergeCoins are allowed)
+        let has_only_coin_commands = pt.commands.iter().all(|cmd| {
+            matches!(
+                cmd,
+                Command::TransferObjects(_, _)
+                    | Command::SplitCoins(_, _)
+                    | Command::MergeCoins(_, _)
+            )
+        });
+
+        // If transaction has other commands, skip this check (it will be rejected by validity_check)
+        if !has_only_coin_commands {
+            return Ok(());
+        }
+
+        // Check all input objects that are coins are SUI coins
+        for object_result in input_objects.iter() {
+            let Some(object) = object_result.as_object() else {
+                continue;
+            };
+
+            // Check if this is a coin object
+            if object.is_coin() {
+                // Verify it's a SUI coin (gas coin)
+                fp_ensure!(
+                    object.is_gas_coin(),
+                    UserInputError::Unsupported(format!(
+                        "Only SUI coins are allowed. Object {} is a coin but not a SUI coin (type: {})",
+                        object.id(),
+                        object
+                            .type_()
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    ))
+                );
+            }
+        }
+
+        // Check all receiving objects that are coins are SUI coins
+        for receiving_result in receiving_objects.iter() {
+            let Some(object) = receiving_result.object.as_object() else {
+                continue;
+            };
+
+            // Check if this is a coin object
+            if object.is_coin() {
+                // Verify it's a SUI coin (gas coin)
+                fp_ensure!(
+                    object.is_gas_coin(),
+                    UserInputError::Unsupported(format!(
+                        "Only SUI coins are allowed. Receiving object {} is a coin but not a SUI coin (type: {})",
+                        object.id(),
+                        object
+                            .type_()
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    ))
+                );
+            }
+        }
 
         Ok(())
     }

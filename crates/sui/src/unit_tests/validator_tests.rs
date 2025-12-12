@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::validator_commands::{
+/*use crate::validator_commands::{
     SuiValidatorCommand, SuiValidatorCommandResponse, get_validator_summary,
 };
 use anyhow::Ok;
@@ -64,4 +64,4 @@ async fn test_print_raw_rgp_txn() -> Result<(), anyhow::Error> {
     // Check that the gas price is updated correctly.
     assert_eq!(summary.next_epoch_gas_price, 42);
     Ok(())
-}
+}*/

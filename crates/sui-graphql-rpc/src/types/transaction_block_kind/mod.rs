@@ -85,6 +85,9 @@ impl TransactionBlockKind {
                 native: rsu,
                 checkpoint_viewed_at,
             }),
+            K::NativeTransfer(_) => {
+                panic!("NativeTransfer is not supported in GraphQL API")
+            }
         }
     }
 }

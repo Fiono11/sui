@@ -2108,6 +2108,8 @@ impl From<crate::transaction::TransactionKind> for TransactionKind {
             // TODO support ProgrammableSystemTransaction
             // .with_programmable_transaction(ptb)
             // .with_kind(Kind::ProgrammableSystemTransaction),
+            K::NativeTransfer(_) => message,
+            // TODO support NativeTransfer in RPC proto
         }
     }
 }

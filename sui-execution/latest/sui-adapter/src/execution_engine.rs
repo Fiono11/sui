@@ -838,6 +838,17 @@ mod checked {
                 .map_err(|e| (e, vec![]))?;
                 Ok((Mode::empty_results(), vec![]))
             }
+            TransactionKind::NativeTransfer(_) => {
+                // NativeTransfer is not supported in latest execution layer
+                // It should use v2 execution layer instead
+                return Err((
+                    ExecutionError::new_with_source(
+                        ExecutionErrorKind::FeatureNotYetSupported,
+                        "NativeTransfer is not supported in latest execution layer",
+                    ),
+                    vec![],
+                ));
+            }
         }?;
         temporary_store
             .check_execution_results_consistency()

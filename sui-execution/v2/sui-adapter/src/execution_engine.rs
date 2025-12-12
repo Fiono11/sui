@@ -50,8 +50,8 @@ mod checked {
     use sui_types::sui_system_state::{AdvanceEpochParams, ADVANCE_EPOCH_SAFE_MODE_FUNCTION_NAME};
     use sui_types::transaction::{
         Argument, AuthenticatorStateExpire, AuthenticatorStateUpdate, CallArg, ChangeEpoch,
-        Command, EndOfEpochTransactionKind, GenesisTransaction, ObjectArg, ProgrammableTransaction,
-        TransactionKind,
+        Command, EndOfEpochTransactionKind, GenesisTransaction, NativeTransfer, ObjectArg,
+        ProgrammableTransaction, TransactionKind,
     };
     use sui_types::transaction::{CheckedInputObjects, RandomnessStateUpdate};
     use sui_types::{
@@ -102,8 +102,15 @@ mod checked {
             protocol_config,
         );
 
-        let mut gas_charger =
-            GasCharger::new(transaction_digest, gas_coins, gas_status, protocol_config);
+        // Check if this is an unmetered transaction (NativeTransfer)
+        let is_unmetered = transaction_kind.is_unmetered();
+
+        // Create unmetered gas charger for NativeTransfer, regular one for others
+        let mut gas_charger = if is_unmetered {
+            GasCharger::new_unmetered(transaction_digest)
+        } else {
+            GasCharger::new(transaction_digest, gas_coins, gas_status, protocol_config)
+        };
 
         let mut tx_ctx = TxContext::new_from_components(
             &transaction_signer,
@@ -703,6 +710,10 @@ mod checked {
             TransactionKind::ProgrammableSystemTransaction(_) => {
                 panic!("ProgrammableSystemTransaction should not exist in execution layer v2");
             }
+            TransactionKind::NativeTransfer(transfer) => {
+                execute_native_transfer(temporary_store, transfer, tx_ctx)?;
+                Ok(Mode::empty_results())
+            }
         }?;
         temporary_store.check_execution_results_consistency()?;
         Ok(result)
@@ -1141,6 +1152,86 @@ mod checked {
             gas_charger,
             pt,
         )
+    }
+
+    /// Execute a native transfer transaction without Move VM and without gas charging
+    fn execute_native_transfer(
+        temporary_store: &mut TemporaryStore<'_>,
+        transfer: NativeTransfer,
+        tx_ctx: &mut TxContext,
+    ) -> Result<(), ExecutionError> {
+        use sui_types::base_types::ObjectID;
+        use sui_types::gas_coin::GasCoin;
+        use sui_types::object::{MoveObject, Object, Owner};
+
+        // 1. Read the input coin object
+        let coin_obj = temporary_store
+            .read_object(&transfer.coin.0)
+            .ok_or_else(|| {
+                ExecutionError::new_with_source(
+                    ExecutionErrorKind::InvalidGasObject,
+                    "Coin object not found",
+                )
+            })?;
+
+        // 2. Verify ownership (must be owned by transaction sender)
+        match &coin_obj.owner {
+            Owner::AddressOwner(owner) if *owner == tx_ctx.sender() => {}
+            _ => {
+                return Err(ExecutionError::new_with_source(
+                    ExecutionErrorKind::InvalidGasObject,
+                    "Coin must be owned by transaction sender",
+                ))
+            }
+        }
+
+        // 3. Verify it's a coin and extract balance
+        let mut coin = GasCoin::try_from(coin_obj).map_err(|e| {
+            ExecutionError::new_with_source(
+                ExecutionErrorKind::InvalidGasObject,
+                format!("Failed to convert to gas coin: {}", e),
+            )
+        })?;
+
+        // 4. Verify sufficient balance
+        if coin.value() < transfer.amount {
+            return Err(ExecutionError::new_with_source(
+                ExecutionErrorKind::InsufficientCoinBalance,
+                "Insufficient coin balance",
+            ));
+        }
+
+        // 5. Deduct amount from source coin
+        coin.0.balance.withdraw(transfer.amount).map_err(|e| {
+            ExecutionError::new_with_source(
+                ExecutionErrorKind::InvalidGasObject,
+                format!("Failed to withdraw: {}", e),
+            )
+        })?;
+
+        // 6. Update the source coin object
+        // Use the current version - it will be updated by the temporary store's lamport timestamp
+        let updated_coin_obj = Object::new_move(
+            MoveObject::new_gas_coin(coin_obj.version(), transfer.coin.0, coin.value()),
+            coin_obj.owner.clone(),
+            tx_ctx.digest(),
+        );
+        temporary_store.mutate_input_object(updated_coin_obj);
+
+        // 7. Create new coin for recipient
+        let new_coin_id = ObjectID::from(tx_ctx.fresh_id());
+        let new_coin_obj = Object::new_move(
+            MoveObject::new_gas_coin(
+                sui_types::base_types::SequenceNumber::MIN,
+                new_coin_id,
+                transfer.amount,
+            ),
+            Owner::AddressOwner(transfer.recipient),
+            tx_ctx.digest(),
+        );
+        temporary_store.create_object(new_coin_obj);
+
+        Ok(())
     }
 
     fn setup_coin_deny_list_state_create(

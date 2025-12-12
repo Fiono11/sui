@@ -441,6 +441,19 @@ impl RandomnessStateUpdate {
     }
 }
 
+/// A native transfer transaction that bypasses Move VM and doesn't charge gas.
+/// This transaction type allows direct transfer of SUI coins between accounts
+/// without executing Move bytecode.
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
+pub struct NativeTransfer {
+    /// The coin object to transfer from (must be owned by sender)
+    pub coin: ObjectRef,
+    /// The recipient address
+    pub recipient: SuiAddress,
+    /// The amount to transfer (must be <= coin balance)
+    pub amount: u64,
+}
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, IntoStaticStr)]
 pub enum TransactionKind {
     /// A transaction that allows the interleaving of native commands and Move calls
@@ -474,6 +487,8 @@ pub enum TransactionKind {
 
     /// A system transaction that is expressed as a PTB
     ProgrammableSystemTransaction(ProgrammableTransaction),
+    /// A native transfer transaction that bypasses Move VM and doesn't charge gas
+    NativeTransfer(NativeTransfer),
     // .. more transaction types go here
 }
 
@@ -1279,6 +1294,29 @@ impl ProgrammableTransaction {
             command.validity_check(config)?;
         }
 
+        // Restrict to only coin transfer, split, and merge operations
+        // NOTE: This only restricts the command types. To ensure only SUI coins (Coin<SUI>) are used
+        // and not other coin types, you must also validate object types when objects are read.
+        // This should be done in `sui_transaction_checks::check_transaction_input` or similar,
+        // where you can check that all input objects used in TransferObjects, SplitCoins, and
+        // MergeCoins are SUI coins by verifying their type is `0x2::coin::Coin<0x2::sui::SUI>`.
+        // The validity_check stage only has object references (ObjectRef), not object data,
+        // so it cannot verify coin types.
+        for command in commands {
+            fp_ensure!(
+                matches!(
+                    command,
+                    Command::TransferObjects(_, _)
+                        | Command::SplitCoins(_, _)
+                        | Command::MergeCoins(_, _)
+                ),
+                UserInputError::Unsupported(
+                    "Only TransferObjects, SplitCoins, and MergeCoins commands are allowed"
+                        .to_string(),
+                )
+            );
+        }
+
         // If randomness is used, it must be enabled by protocol config.
         // A command that uses Random can only be followed by TransferObjects or MergeCoins.
         if let Some(random_index) = inputs.iter().position(|obj| {
@@ -1492,7 +1530,13 @@ impl TransactionKind {
             | TransactionKind::EndOfEpochTransaction(_)
             | TransactionKind::ProgrammableSystemTransaction(_) => true,
             TransactionKind::ProgrammableTransaction(_) => false,
+            TransactionKind::NativeTransfer(_) => false,
         }
+    }
+
+    /// Returns true if this transaction type should use unmetered gas (no gas charging)
+    pub fn is_unmetered(&self) -> bool {
+        matches!(self, TransactionKind::NativeTransfer(_))
     }
 
     pub fn is_end_of_epoch_tx(&self) -> bool {
@@ -1561,7 +1605,9 @@ impl TransactionKind {
             Self::ProgrammableTransaction(pt) | Self::ProgrammableSystemTransaction(pt) => {
                 Either::Right(Either::Left(pt.shared_input_objects()))
             }
-            Self::Genesis(_) => Either::Right(Either::Right(iter::empty())),
+            Self::Genesis(_) | Self::NativeTransfer(_) => {
+                Either::Right(Either::Right(iter::empty()))
+            }
         }
     }
 
@@ -1583,7 +1629,8 @@ impl TransactionKind {
             | TransactionKind::AuthenticatorStateUpdate(_)
             | TransactionKind::RandomnessStateUpdate(_)
             | TransactionKind::EndOfEpochTransaction(_)
-            | TransactionKind::ProgrammableSystemTransaction(_) => vec![],
+            | TransactionKind::ProgrammableSystemTransaction(_)
+            | TransactionKind::NativeTransfer(_) => vec![],
             TransactionKind::ProgrammableTransaction(pt) => pt.receiving_objects(),
         }
     }
@@ -1644,6 +1691,9 @@ impl TransactionKind {
             }
             Self::ProgrammableTransaction(p) | Self::ProgrammableSystemTransaction(p) => {
                 return p.input_objects();
+            }
+            Self::NativeTransfer(transfer) => {
+                vec![InputObjectKind::ImmOrOwnedMoveObject(transfer.coin)]
             }
         };
         // Ensure that there are no duplicate inputs. This cannot be removed because:
@@ -1728,6 +1778,13 @@ impl TransactionKind {
                     ));
                 }
             }
+            TransactionKind::NativeTransfer(transfer) => {
+                if transfer.amount == 0 {
+                    return Err(UserInputError::Unsupported(
+                        "Transfer amount must be greater than zero".to_string(),
+                    ));
+                }
+            }
             TransactionKind::ProgrammableSystemTransaction(_) => {
                 if !config.enable_accumulators() {
                     return Err(UserInputError::Unsupported(
@@ -1775,6 +1832,7 @@ impl TransactionKind {
             Self::AuthenticatorStateUpdate(_) => "AuthenticatorStateUpdate",
             Self::RandomnessStateUpdate(_) => "RandomnessStateUpdate",
             Self::EndOfEpochTransaction(_) => "EndOfEpochTransaction",
+            Self::NativeTransfer(_) => "NativeTransfer",
         }
     }
 }
@@ -1844,6 +1902,12 @@ impl Display for TransactionKind {
             }
             Self::EndOfEpochTransaction(_) => {
                 writeln!(writer, "Transaction Kind : End of Epoch Transaction")?;
+            }
+            Self::NativeTransfer(transfer) => {
+                writeln!(writer, "Transaction Kind : Native Transfer")?;
+                writeln!(writer, "Coin: {:?}", transfer.coin)?;
+                writeln!(writer, "Recipient: {}", transfer.recipient)?;
+                writeln!(writer, "Amount: {}", transfer.amount)?;
             }
         }
         write!(f, "{}", writer)
@@ -1988,6 +2052,33 @@ impl TransactionData {
                 owner: gas_sponsor,
                 payment: gas_payment,
                 budget: gas_budget,
+            },
+            expiration: TransactionExpiration::None,
+        })
+    }
+
+    /// Create a new native transfer transaction that bypasses Move VM and doesn't charge gas
+    pub fn new_native_transfer(
+        sender: SuiAddress,
+        coin: ObjectRef,
+        recipient: SuiAddress,
+        amount: u64,
+    ) -> Self {
+        TransactionData::V1(TransactionDataV1 {
+            kind: TransactionKind::NativeTransfer(NativeTransfer {
+                coin,
+                recipient,
+                amount,
+            }),
+            sender,
+            // Native transfers are unmetered and don't charge gas, so no gas payment is needed.
+            // The coin is already included in the NativeTransfer input objects.
+            // Set budget and price to reasonable values (minimum checks are skipped for unmetered txs)
+            gas_data: GasData {
+                price: DEFAULT_VALIDATOR_GAS_PRICE, // Use default gas price to meet RGP requirement
+                owner: sender,
+                payment: vec![], // Empty - unmetered transactions don't need gas coins
+                budget: 2000, // Small budget sufficient for unmetered transactions (minimum check is skipped)
             },
             expiration: TransactionExpiration::None,
         })
@@ -2701,7 +2792,11 @@ impl TransactionDataAPI for TransactionDataV1 {
                 TransactionExpiration::ValidDuring { .. } => {}
             }
         } else {
-            fp_ensure!(!self.gas().is_empty(), UserInputError::MissingGasPayment);
+            // Skip gas payment check for unmetered transactions
+            // (they don't charge gas, so gas payment is not needed)
+            if !self.kind().is_unmetered() {
+                fp_ensure!(!self.gas().is_empty(), UserInputError::MissingGasPayment);
+            }
         }
 
         let gas_len = self.gas().len();
@@ -2739,13 +2834,17 @@ impl TransactionDataAPI for TransactionDataV1 {
                     max_budget: cost_table.max_gas_budget,
                 }
             );
-            fp_ensure!(
-                self.gas_data.budget >= cost_table.min_transaction_cost,
-                UserInputError::GasBudgetTooLow {
-                    gas_budget: self.gas_data.budget,
-                    min_budget: cost_table.min_transaction_cost,
-                }
-            );
+            // Skip minimum transaction cost check for unmetered transactions
+            // (they don't charge gas, so minimum cost requirement doesn't apply)
+            if !self.kind().is_unmetered() {
+                fp_ensure!(
+                    self.gas_data.budget >= cost_table.min_transaction_cost,
+                    UserInputError::GasBudgetTooLow {
+                        gas_budget: self.gas_data.budget,
+                        min_budget: cost_table.min_transaction_cost,
+                    }
+                );
+            }
         }
 
         self.validity_check_no_gas_check(config)
@@ -2799,7 +2898,8 @@ impl TransactionDataAPI for TransactionDataV1 {
             | TransactionKind::Genesis(_)
             | TransactionKind::AuthenticatorStateUpdate(_)
             | TransactionKind::EndOfEpochTransaction(_)
-            | TransactionKind::RandomnessStateUpdate(_) => false,
+            | TransactionKind::RandomnessStateUpdate(_)
+            | TransactionKind::NativeTransfer(_) => false,
         }
     }
 
