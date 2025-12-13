@@ -83,6 +83,26 @@ async fn test_native_transfer_success() {
         "NativeTransfer should not charge gas"
     );
 
+    // Verify effects contain expected mutations, creations, and deletions
+    assert_eq!(
+        effects.mutated().len(),
+        1,
+        "Should mutate one object (source coin)"
+    );
+    assert_eq!(
+        effects.mutated()[0].0.0,
+        coin_id,
+        "Mutated object should be the source coin"
+    );
+    assert_eq!(
+        effects.mutated()[0].1.get_address_owner_address().unwrap(),
+        sender,
+        "Mutated coin should still be owned by sender"
+    );
+    assert!(effects.deleted().is_empty(), "No objects should be deleted");
+    let created_objects = effects.created();
+    assert_eq!(created_objects.len(), 1, "Should create one new coin");
+
     // Verify the coin was updated correctly
     let updated_coin = state.get_object(&coin_id).await.unwrap();
     let updated_gas_coin = GasCoin::try_from(&updated_coin).unwrap();
@@ -93,8 +113,6 @@ async fn test_native_transfer_success() {
     );
 
     // Verify new coin was created for recipient
-    let created_objects = effects.created();
-    assert_eq!(created_objects.len(), 1, "Should create one new coin");
     let new_coin_id = created_objects[0].0.0;
     let new_coin = state.get_object(&new_coin_id).await.unwrap();
     let new_gas_coin = GasCoin::try_from(&new_coin).unwrap();
@@ -305,6 +323,25 @@ async fn test_native_transfer_fast_path() {
         0,
         "NativeTransfer should not charge gas even in fast path"
     );
+
+    // Verify effects contain expected mutations, creations, and deletions
+    assert_eq!(
+        effects.mutated().len(),
+        1,
+        "Should mutate one object (source coin)"
+    );
+    assert_eq!(
+        effects.mutated()[0].0.0,
+        coin_id,
+        "Mutated object should be the source coin"
+    );
+    assert_eq!(
+        effects.mutated()[0].1.get_address_owner_address().unwrap(),
+        sender,
+        "Mutated coin should still be owned by sender"
+    );
+    assert!(effects.deleted().is_empty(), "No objects should be deleted");
+    assert_eq!(effects.created().len(), 1, "Should create one new coin");
 }
 
 #[tokio::test]
@@ -346,6 +383,26 @@ async fn test_native_transfer_full_amount() {
         panic!("Transaction execution failed: {:?}", effects.status());
     }
 
+    // Verify effects contain expected mutations, creations, and deletions
+    assert_eq!(
+        effects.mutated().len(),
+        1,
+        "Should mutate one object (source coin)"
+    );
+    assert_eq!(
+        effects.mutated()[0].0.0,
+        coin_id,
+        "Mutated object should be the source coin"
+    );
+    assert_eq!(
+        effects.mutated()[0].1.get_address_owner_address().unwrap(),
+        sender,
+        "Mutated coin should still be owned by sender"
+    );
+    assert!(effects.deleted().is_empty(), "No objects should be deleted");
+    let created_objects = effects.created();
+    assert_eq!(created_objects.len(), 1, "Should create one new coin");
+
     // Verify the source coin has zero balance
     let updated_coin = state.get_object(&coin_id).await.unwrap();
     let updated_gas_coin = GasCoin::try_from(&updated_coin).unwrap();
@@ -356,8 +413,6 @@ async fn test_native_transfer_full_amount() {
     );
 
     // Verify new coin has full amount
-    let created_objects = effects.created();
-    assert_eq!(created_objects.len(), 1, "Should create one new coin");
     let new_coin_id = created_objects[0].0.0;
     let new_coin = state.get_object(&new_coin_id).await.unwrap();
     let new_gas_coin = GasCoin::try_from(&new_coin).unwrap();
@@ -407,6 +462,32 @@ async fn test_native_transfer_multiple_transfers() {
         );
     }
 
+    // Verify first transfer effects
+    assert_eq!(
+        effects1.mutated().len(),
+        1,
+        "Should mutate one object (source coin)"
+    );
+    assert_eq!(
+        effects1.mutated()[0].0.0,
+        coin_id,
+        "Mutated object should be the source coin"
+    );
+    assert_eq!(
+        effects1.mutated()[0].1.get_address_owner_address().unwrap(),
+        sender,
+        "Mutated coin should still be owned by sender"
+    );
+    assert!(
+        effects1.deleted().is_empty(),
+        "No objects should be deleted"
+    );
+    assert_eq!(
+        effects1.created().len(),
+        1,
+        "Should create one new coin for first recipient"
+    );
+
     // Get updated coin reference
     let updated_coin1 = state.get_object(&coin_id).await.unwrap();
     let updated_coin_ref1 = updated_coin1.compute_object_reference();
@@ -431,6 +512,32 @@ async fn test_native_transfer_multiple_transfers() {
         );
     }
 
+    // Verify second transfer effects
+    assert_eq!(
+        effects2.mutated().len(),
+        1,
+        "Should mutate one object (source coin)"
+    );
+    assert_eq!(
+        effects2.mutated()[0].0.0,
+        coin_id,
+        "Mutated object should be the source coin"
+    );
+    assert_eq!(
+        effects2.mutated()[0].1.get_address_owner_address().unwrap(),
+        sender,
+        "Mutated coin should still be owned by sender"
+    );
+    assert!(
+        effects2.deleted().is_empty(),
+        "No objects should be deleted"
+    );
+    assert_eq!(
+        effects2.created().len(),
+        1,
+        "Should create one new coin for second recipient"
+    );
+
     // Verify final balance
     let final_coin = state.get_object(&coin_id).await.unwrap();
     let final_gas_coin = GasCoin::try_from(&final_coin).unwrap();
@@ -439,8 +546,4 @@ async fn test_native_transfer_multiple_transfers() {
         coin_value - transfer_amount1 - transfer_amount2,
         "Final balance should be correct after multiple transfers"
     );
-
-    // Verify both recipients received coins
-    assert_eq!(effects1.created().len(), 1);
-    assert_eq!(effects2.created().len(), 1);
 }
