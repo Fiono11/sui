@@ -1703,7 +1703,7 @@ impl TransactionKind {
 
     pub fn validity_check(&self, config: &ProtocolConfig) -> UserInputResult {
         match self {
-            TransactionKind::PaySui(p) => {
+            TransactionKind::PaySui(_p) => {
                 //fp_ensure!(!p.coins.is_empty(), SuiError::EmptyInputCoins);
                 //fp_ensure!(
                 // unwrap() is safe because coins are not empty.

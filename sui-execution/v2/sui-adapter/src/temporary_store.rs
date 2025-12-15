@@ -15,7 +15,7 @@ use sui_types::execution::{
 use sui_types::execution_status::ExecutionStatus;
 use sui_types::inner_temporary_store::InnerTemporaryStore;
 use sui_types::layout_resolver::LayoutResolver;
-use sui_types::storage::{BackingStore, DenyListResult, PackageObject};
+use sui_types::storage::{BackingStore, DeleteKind, DenyListResult, PackageObject, WriteKind};
 use sui_types::sui_system_state::{get_sui_system_state_wrapper, AdvanceEpochParams};
 use sui_types::{
     base_types::{ObjectID, ObjectRef, SequenceNumber, SuiAddress, TransactionDigest},
@@ -491,6 +491,37 @@ impl<'backing> TemporaryStore<'backing> {
         // there should be no deletion after write
         debug_assert!(!self.execution_results.written_objects.contains_key(id));
         debug_assert!(self.input_objects.contains_key(id));
+        self.execution_results.modified_objects.insert(*id);
+        self.execution_results.deleted_object_ids.insert(*id);
+    }
+
+    /// Write an object with a context. This is used for operations like pay_sui.
+    pub fn write_object<C>(&mut self, _ctx: &C, object: Object, kind: WriteKind) {
+        match kind {
+            WriteKind::Create => self.create_object(object),
+            WriteKind::Mutate => {
+                let id = object.id();
+                self.execution_results.modified_objects.insert(id);
+                self.execution_results.written_objects.insert(id, object);
+            }
+            WriteKind::Unwrap => {
+                let id = object.id();
+                self.execution_results.modified_objects.insert(id);
+                self.execution_results.written_objects.insert(id, object);
+            }
+        }
+    }
+
+    /// Delete an object with a context. This is used for operations like pay_sui.
+    pub fn delete_object<C>(
+        &mut self,
+        _ctx: &C,
+        id: &ObjectID,
+        _version: SequenceNumber,
+        _kind: DeleteKind,
+    ) {
+        // there should be no deletion after write
+        debug_assert!(!self.execution_results.written_objects.contains_key(id));
         self.execution_results.modified_objects.insert(*id);
         self.execution_results.deleted_object_ids.insert(*id);
     }
