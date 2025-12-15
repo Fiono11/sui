@@ -494,6 +494,7 @@ mod checked {
         metrics: Arc<LimitsMetrics>,
     ) -> Result<Mode::ExecutionResults, ExecutionError> {
         let result = match transaction_kind {
+            TransactionKind::PaySui(_) => todo!(),
             TransactionKind::ChangeEpoch(change_epoch) => {
                 let builder = ProgrammableTransactionBuilder::new();
                 advance_epoch(

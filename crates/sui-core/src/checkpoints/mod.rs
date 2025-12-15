@@ -2047,6 +2047,7 @@ impl CheckpointBuilder {
                             ));
                         }
                     }
+                    TransactionKind::PaySui(_) => todo!(),
                 }
                 transactions.push(transaction);
                 all_effects_and_transaction_sizes.push((effects, size));

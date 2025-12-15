@@ -93,6 +93,26 @@ mod balance_withdraw_tests;
 #[path = "unit_tests/address_balance_gas_tests.rs"]
 mod address_balance_gas_tests;
 
+/// Send SUI coins to a list of addresses, following a list of amounts.
+/// only for SUI coin and does not require a separate gas coin object.
+/// Specifically, what pay_sui does are:
+/// 1. debit each input_coin to create new coin following the order of
+/// amounts and assign it to the corresponding recipient.
+/// 2. accumulate all residual SUI from input coins left and deposit all SUI to the first
+/// input coin, then use the first input coin as the gas coin object.
+/// 3. the balance of the first input coin after tx is sum(input_coins) - sum(amounts) - actual_gas_cost
+/// 4. all other input coins other than the first one are deleted.
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
+pub struct PaySui {
+    /// The coins to be used for payment.
+    pub coins: Vec<ObjectRef>,
+    /// The addresses that will receive payment
+    pub recipients: Vec<SuiAddress>,
+    /// The amounts each recipient will receive.
+    /// Must be the same length as recipients
+    pub amounts: Vec<u64>,
+}
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
 pub enum CallArg {
     // contains no structs or objects
@@ -443,6 +463,9 @@ impl RandomnessStateUpdate {
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, IntoStaticStr)]
 pub enum TransactionKind {
+    /// Pay multiple recipients using multiple SUI coins,
+    /// no extra gas payment SUI coin is required.
+    PaySui(PaySui),
     /// A transaction that allows the interleaving of native commands and Move calls
     ProgrammableTransaction(ProgrammableTransaction),
     /// A system transaction that will update epoch information on-chain.
@@ -1491,7 +1514,7 @@ impl TransactionKind {
             | TransactionKind::RandomnessStateUpdate(_)
             | TransactionKind::EndOfEpochTransaction(_)
             | TransactionKind::ProgrammableSystemTransaction(_) => true,
-            TransactionKind::ProgrammableTransaction(_) => false,
+            TransactionKind::ProgrammableTransaction(_) | TransactionKind::PaySui(_) => false,
         }
     }
 
@@ -1561,7 +1584,7 @@ impl TransactionKind {
             Self::ProgrammableTransaction(pt) | Self::ProgrammableSystemTransaction(pt) => {
                 Either::Right(Either::Left(pt.shared_input_objects()))
             }
-            Self::Genesis(_) => Either::Right(Either::Right(iter::empty())),
+            Self::Genesis(_) | Self::PaySui(_) => Either::Right(Either::Right(iter::empty())),
         }
     }
 
@@ -1575,6 +1598,7 @@ impl TransactionKind {
     pub fn receiving_objects(&self) -> Vec<ObjectRef> {
         match &self {
             TransactionKind::ChangeEpoch(_)
+            | TransactionKind::PaySui(_)
             | TransactionKind::Genesis(_)
             | TransactionKind::ConsensusCommitPrologue(_)
             | TransactionKind::ConsensusCommitPrologueV2(_)
@@ -1594,6 +1618,10 @@ impl TransactionKind {
     /// TODO: use an iterator over references here instead of a Vec to avoid allocations.
     pub fn input_objects(&self) -> UserInputResult<Vec<InputObjectKind>> {
         let input_objects = match &self {
+            Self::PaySui(PaySui { coins, .. }) => coins
+                .iter()
+                .map(|o| InputObjectKind::ImmOrOwnedMoveObject(*o))
+                .collect(),
             Self::ChangeEpoch(_) => {
                 vec![InputObjectKind::SharedMoveObject {
                     id: SUI_SYSTEM_STATE_OBJECT_ID,
@@ -1675,6 +1703,14 @@ impl TransactionKind {
 
     pub fn validity_check(&self, config: &ProtocolConfig) -> UserInputResult {
         match self {
+            TransactionKind::PaySui(p) => {
+                //fp_ensure!(!p.coins.is_empty(), SuiError::EmptyInputCoins);
+                //fp_ensure!(
+                // unwrap() is safe because coins are not empty.
+                //p.coins.first().unwrap() == gas_payment,
+                //SuiError::UnexpectedGasPaymentObject
+                //);
+            }
             TransactionKind::ProgrammableTransaction(p) => p.validity_check(config)?,
             // All transactiond kinds below are assumed to be system,
             // and no validity or limit checks are performed.
@@ -1764,6 +1800,7 @@ impl TransactionKind {
 
     pub fn name(&self) -> &'static str {
         match self {
+            Self::PaySui(_) => "PaySui",
             Self::ChangeEpoch(_) => "ChangeEpoch",
             Self::Genesis(_) => "Genesis",
             Self::ConsensusCommitPrologue(_) => "ConsensusCommitPrologue",
@@ -1783,6 +1820,23 @@ impl Display for TransactionKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut writer = String::new();
         match &self {
+            Self::PaySui(p) => {
+                writeln!(writer, "Transaction Kind : Pay SUI")?;
+                writeln!(writer, "Coins:")?;
+                for (object_id, seq, digest) in &p.coins {
+                    writeln!(writer, "Object ID : {}", &object_id)?;
+                    writeln!(writer, "Sequence Number : {:?}", seq)?;
+                    writeln!(writer, "Object Digest : {}", digest)?;
+                }
+                writeln!(writer, "Recipients:")?;
+                for recipient in &p.recipients {
+                    writeln!(writer, "{}", recipient)?;
+                }
+                writeln!(writer, "Amounts:")?;
+                for amount in &p.amounts {
+                    writeln!(writer, "{}", amount)?
+                }
+            }
             Self::ChangeEpoch(e) => {
                 writeln!(writer, "Transaction Kind : Epoch Change")?;
                 writeln!(writer, "New epoch ID : {}", e.epoch)?;
@@ -1918,6 +1972,23 @@ pub struct TransactionDataV1 {
 }
 
 impl TransactionData {
+    pub fn new_pay_sui2(
+        sender: SuiAddress,
+        coins: Vec<ObjectRef>,
+        recipients: Vec<SuiAddress>,
+        amounts: Vec<u64>,
+        gas_payment: ObjectRef,
+        gas_budget: u64,
+        gas_price: u64,
+    ) -> Self {
+        let kind = TransactionKind::PaySui(PaySui {
+            coins,
+            recipients,
+            amounts,
+        });
+        Self::new(kind, sender, gas_payment, gas_budget, gas_price)
+    }
+
     fn new_system_transaction(kind: TransactionKind) -> Self {
         // assert transaction kind if a system transaction
         assert!(kind.is_system_tx());
@@ -2794,6 +2865,7 @@ impl TransactionDataAPI for TransactionDataV1 {
             | TransactionKind::ConsensusCommitPrologueV4(_) => true,
 
             TransactionKind::ProgrammableTransaction(_)
+            | TransactionKind::PaySui(_)
             | TransactionKind::ProgrammableSystemTransaction(_)
             | TransactionKind::ChangeEpoch(_)
             | TransactionKind::Genesis(_)
