@@ -261,6 +261,37 @@ impl MoveObject {
         &self.contents[ID_END_INDEX..]
     }
 
+    fn update_contents_with_limit(
+        &mut self,
+        new_contents: Vec<u8>,
+        max_move_object_size: u64,
+    ) -> Result<(), ExecutionError> {
+        if new_contents.len() as u64 > max_move_object_size {
+            return Err(ExecutionError::from_kind(
+                ExecutionErrorKind::MoveObjectTooBig {
+                    object_size: new_contents.len() as u64,
+                    max_object_size: max_move_object_size,
+                },
+            ));
+        }
+
+        #[cfg(debug_assertions)]
+        let old_id = self.id();
+        self.contents = new_contents;
+
+        // Update should not modify ID
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(self.id(), old_id);
+
+        Ok(())
+    }
+
+    /// Update a coin object without requiring the current ProtocolConfig.
+    /// Asserts that the gas object is not unexpectedly large.
+    pub fn update_coin_contents(&mut self, new_contents: Vec<u8>) {
+        self.update_contents_with_limit(new_contents, 256).unwrap()
+    }
+
     /// Update the contents of this object but does not increment its version
     /// This should only be used for safe mode epoch advancement.
     pub(crate) fn update_contents_advance_epoch_safe_mode(

@@ -371,6 +371,10 @@ mod checked {
         }
 
         fn bucketize_computation(&mut self, aborted: Option<bool>) -> Result<(), ExecutionError> {
+            if self.is_unmetered() {
+                self.computation_cost = 0;
+                return Ok(());
+            }
             let gas_used = self.gas_status.gas_used_pre_gas_price();
             let effective_gas_price = if self
                 .cost_table

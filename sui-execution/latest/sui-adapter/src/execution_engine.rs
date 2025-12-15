@@ -9,6 +9,7 @@ mod checked {
     use crate::execution_mode::{self, ExecutionMode};
     use crate::execution_value::SuiResolver;
     use move_binary_format::CompiledModule;
+    use move_core_types::language_storage::StructTag;
     use move_trace_format::format::MoveTraceBuilder;
     use move_vm_runtime::move_vm::MoveVM;
     use mysten_common::debug_fatal;
@@ -18,11 +19,12 @@ mod checked {
         BALANCE_CREATE_REWARDS_FUNCTION_NAME, BALANCE_DESTROY_REBATES_FUNCTION_NAME,
         BALANCE_MODULE_NAME,
     };
+    use sui_types::coin::Coin;
     use sui_types::execution_params::ExecutionOrEarlyError;
-    use sui_types::gas_coin::GAS;
+    use sui_types::gas_coin::{GAS, GasCoin};
     use sui_types::messages_checkpoint::CheckpointTimestamp;
     use sui_types::metrics::LimitsMetrics;
-    use sui_types::object::OBJECT_START_VERSION;
+    use sui_types::object::{Data, MoveObject, OBJECT_START_VERSION, Owner};
     use sui_types::programmable_transaction_builder::ProgrammableTransactionBuilder;
     use sui_types::randomness_state::{
         RANDOMNESS_MODULE_NAME, RANDOMNESS_STATE_CREATE_FUNCTION_NAME,
@@ -65,13 +67,13 @@ mod checked {
     use sui_types::gas::SuiGasStatus;
     use sui_types::id::UID;
     use sui_types::inner_temporary_store::InnerTemporaryStore;
-    use sui_types::storage::BackingStore;
+    use sui_types::storage::{BackingStore, WriteKind};
     #[cfg(msim)]
     use sui_types::sui_system_state::advance_epoch_result_injection::maybe_modify_result;
     use sui_types::sui_system_state::{ADVANCE_EPOCH_SAFE_MODE_FUNCTION_NAME, AdvanceEpochParams};
     use sui_types::transaction::{
         Argument, AuthenticatorStateExpire, AuthenticatorStateUpdate, CallArg, ChangeEpoch,
-        Command, EndOfEpochTransactionKind, GasData, GenesisTransaction, ObjectArg,
+        Command, EndOfEpochTransactionKind, GasData, GenesisTransaction, ObjectArg, PaySui,
         ProgrammableTransaction, StoredExecutionTimeObservations, TransactionKind,
         is_gas_paid_from_address_balance,
     };
@@ -83,6 +85,188 @@ mod checked {
         object::{Object, ObjectInner},
         sui_system_state::{ADVANCE_EPOCH_FUNCTION_NAME, SUI_SYSTEM_MODULE_NAME},
     };
+
+    /// Context for single transaction operations (e.g., pay_sui)
+    pub struct SingleTxContext {
+        sender: SuiAddress,
+    }
+
+    impl SingleTxContext {
+        pub fn pay_sui(sender: SuiAddress) -> Self {
+            Self { sender }
+        }
+    }
+
+    pub fn transfer_coin(
+        ctx: &SingleTxContext,
+        temporary_store: &mut TemporaryStore,
+        coin: &Coin,
+        recipient: SuiAddress,
+        coin_type: StructTag,
+        previous_transaction: TransactionDigest,
+    ) {
+        // Extract the inner type from Coin<T> to pass to new_coin, which expects just T
+        // (it will wrap it in Coin<...> itself). This ensures we create Coin<SUI>
+        // instead of Coin<Coin<SUI>>.
+        let inner_type = coin_type
+            .type_params
+            .first()
+            .expect("Coin type must have one type parameter")
+            .clone();
+        let new_coin = Object::new_move(
+            MoveObject::new_coin(inner_type, SequenceNumber::new(), *coin.id(), coin.value()),
+            Owner::AddressOwner(recipient),
+            previous_transaction,
+        );
+        temporary_store.write_object(ctx, new_coin, WriteKind::Create);
+    }
+
+    fn pay_sui(
+        temporary_store: &mut TemporaryStore,
+        coin_objects: &mut Vec<Object>,
+        recipients: Vec<SuiAddress>,
+        amounts: Vec<u64>,
+        tx_ctx: Rc<RefCell<TxContext>>,
+    ) -> Result<(), ExecutionError> {
+        let (mut coins, coin_type) = check_coins(coin_objects, Some(GasCoin::type_()))?;
+        check_recipients(&recipients, &amounts)?;
+        let (total_coins, total_amount) = check_total_coins(&coins, &amounts)?;
+
+        let mut merged_coin = coins.swap_remove(0);
+        merged_coin.merge_coins(&mut coins)?;
+
+        let ctx = SingleTxContext::pay_sui(tx_ctx.borrow().sender());
+
+        for (recipient, amount) in recipients.iter().zip(amounts) {
+            // unwrap is safe b/c merged_coin value is total_coins, which is greater than total_amount
+            let new_coin = merged_coin
+                .split_coin(amount, UID::new(tx_ctx.borrow_mut().fresh_id()))
+                .unwrap();
+            transfer_coin(
+                &ctx,
+                temporary_store,
+                &new_coin,
+                *recipient,
+                coin_type.clone(),
+                tx_ctx.borrow().digest(),
+            );
+        }
+        update_input_coins(&ctx, temporary_store, coin_objects, &merged_coin, None);
+
+        debug_assert_eq!(total_coins - merged_coin.value(), total_amount);
+        Ok(())
+    }
+
+    // A helper function for pay_sui and pay_all_sui.
+    // It updates the gas_coin_obj based on the updated gas_coin, transfers gas_coin_obj to
+    // recipient when needed, and then deletes all other input coins other than gas_coin_obj.
+    pub fn update_input_coins(
+        _ctx: &SingleTxContext,
+        temporary_store: &mut TemporaryStore,
+        coin_objects: &mut Vec<Object>,
+        gas_coin: &Coin,
+        recipient: Option<SuiAddress>,
+    ) {
+        let mut gas_coin_obj = coin_objects.remove(0);
+        let new_contents = bcs::to_bytes(gas_coin).expect("Coin serialization should not fail");
+        // unwrap is safe because we checked that it was a coin object above.
+        let move_obj = gas_coin_obj.data.try_as_move_mut().unwrap();
+        move_obj.set_contents_unsafe(new_contents);
+        if let Some(recipient) = recipient {
+            gas_coin_obj.transfer(recipient);
+        }
+        temporary_store.mutate_input_object(gas_coin_obj);
+
+        for coin_object in coin_objects.iter() {
+            temporary_store.delete_input_object(&coin_object.id());
+        }
+    }
+
+    fn check_coins(
+        coin_objects: &[Object],
+        mut coin_type: Option<StructTag>,
+    ) -> Result<(Vec<Coin>, StructTag), ExecutionError> {
+        if coin_objects.is_empty() {
+            return Err(ExecutionError::new_with_source(
+                ExecutionErrorKind::InvariantViolation,
+                "Pay transaction requires a non-empty list of input coins".to_string(),
+            ));
+        }
+        let mut coins = Vec::new();
+        for coin_obj in coin_objects {
+            match &coin_obj.data {
+                Data::Move(move_obj) => {
+                    let struct_tag: StructTag = move_obj.type_().clone().into();
+                    if !Coin::is_coin(&struct_tag) {
+                        return Err(ExecutionError::new_with_source(
+                            ExecutionErrorKind::InvariantViolation,
+                            "Provided non-Coin<T> object as input to pay/pay_sui/pay_all_sui transaction".to_string(),
+                        ));
+                    }
+                    if let Some(typ) = &coin_type {
+                        if typ != &struct_tag {
+                            return Err(ExecutionError::new_with_source(
+                                ExecutionErrorKind::InvariantViolation,
+                                format!(
+                                    "Coin type check failed in pay/pay_sui/pay_all_sui transaction, expected: {:?}, found: {:?}",
+                                    typ, struct_tag
+                                ),
+                            ));
+                        }
+                    } else {
+                        coin_type = Some(struct_tag)
+                    }
+
+                    let coin = Coin::from_bcs_bytes(move_obj.contents())
+                        .expect("Deserializing coin object should not fail");
+                    coins.push(coin)
+                }
+                _ => {
+                    return Err(ExecutionError::new_with_source(
+                        ExecutionErrorKind::InvariantViolation,
+                        "Provided non-Coin<T> object as input to pay transaction".to_string(),
+                    ));
+                }
+            }
+        }
+        // safe because coin_objects must be non-empty, and coin_type must be set in loop above.
+        Ok((coins, coin_type.unwrap()))
+    }
+
+    fn check_recipients(recipients: &[SuiAddress], amounts: &[u64]) -> Result<(), ExecutionError> {
+        if recipients.is_empty() {
+            return Err(ExecutionError::new_with_source(
+                ExecutionErrorKind::InvariantViolation,
+                "Pay transaction requires a non-empty list of recipient addresses".to_string(),
+            ));
+        }
+        if recipients.len() != amounts.len() {
+            return Err(ExecutionError::new_with_source(
+                ExecutionErrorKind::InvariantViolation,
+                format!(
+                    "Found {:?} recipient addresses, but {:?} recipient amounts",
+                    recipients.len(),
+                    amounts.len()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_total_coins(coins: &[Coin], amounts: &[u64]) -> Result<(u64, u64), ExecutionError> {
+        let total_amount: u64 = amounts.iter().sum();
+        let total_coins = coins.iter().fold(0u64, |acc, c| acc + c.value());
+        if total_amount > total_coins {
+            return Err(ExecutionError::new_with_source(
+                ExecutionErrorKind::InsufficientCoinBalance,
+                format!(
+                    "Attempting to pay a total amount {:?} that is greater than the sum of input coin values {:?}",
+                    total_amount, total_coins
+                ),
+            ));
+        }
+        Ok((total_coins, total_amount))
+    }
 
     #[instrument(name = "tx_execute_to_effects", level = "debug", skip_all)]
     pub fn execute_transaction_to_effects<Mode: ExecutionMode>(
@@ -596,20 +780,25 @@ mod checked {
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
     ) -> ResultWithTimings<Mode::ExecutionResults, ExecutionError> {
         let result = match transaction_kind {
-            TransactionKind::PaySui(_) => todo!(),
-            TransactionKind::ChangeEpoch(change_epoch) => {
-                let builder = ProgrammableTransactionBuilder::new();
-                advance_epoch(
-                    builder,
-                    change_epoch,
+            TransactionKind::PaySui(PaySui {
+                coins,
+                recipients,
+                amounts,
+            }) => {
+                let mut coin_objects: Vec<Object> =  // unwrap is is safe because we built the object map from the transaction
+                    coins.iter().map(|c|
+                    temporary_store
+                        .objects()
+                        .get(&c.0)
+                        .unwrap()
+                        .clone()
+                    ).collect();
+                pay_sui(
                     temporary_store,
-                    store,
-                    tx_ctx,
-                    move_vm,
-                    gas_charger,
-                    protocol_config,
-                    metrics,
-                    trace_builder_opt,
+                    &mut coin_objects,
+                    recipients,
+                    amounts,
+                    tx_ctx.clone(),
                 )
                 .map_err(|e| (e, vec![]))?;
                 Ok((Mode::empty_results(), vec![]))
@@ -719,6 +908,23 @@ mod checked {
                     pt,
                     trace_builder_opt,
                 )?;
+                Ok((Mode::empty_results(), vec![]))
+            }
+            TransactionKind::ChangeEpoch(change_epoch) => {
+                let builder = ProgrammableTransactionBuilder::new();
+                advance_epoch(
+                    builder,
+                    change_epoch,
+                    temporary_store,
+                    store,
+                    tx_ctx,
+                    move_vm,
+                    gas_charger,
+                    protocol_config,
+                    metrics,
+                    trace_builder_opt,
+                )
+                .map_err(|e| (e, vec![]))?;
                 Ok((Mode::empty_results(), vec![]))
             }
             TransactionKind::EndOfEpochTransaction(txns) => {

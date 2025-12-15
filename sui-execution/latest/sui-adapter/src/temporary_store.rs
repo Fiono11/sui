@@ -19,7 +19,7 @@ use sui_types::execution_status::ExecutionStatus;
 use sui_types::inner_temporary_store::InnerTemporaryStore;
 use sui_types::layout_resolver::LayoutResolver;
 use sui_types::object::Data;
-use sui_types::storage::{BackingStore, DenyListResult, PackageObject};
+use sui_types::storage::{BackingStore, DenyListResult, PackageObject, WriteKind};
 use sui_types::sui_system_state::{AdvanceEpochParams, get_sui_system_state_wrapper};
 use sui_types::{
     SUI_DENY_LIST_OBJECT_ID,
@@ -405,6 +405,23 @@ impl<'backing> TemporaryStore<'backing> {
         let id = object.id();
         self.execution_results.created_object_ids.insert(id);
         self.execution_results.written_objects.insert(id, object);
+    }
+
+    /// Write an object with a context. This is used for operations like pay_sui.
+    pub fn write_object<C>(&mut self, _ctx: &C, object: Object, kind: WriteKind) {
+        match kind {
+            WriteKind::Create => self.create_object(object),
+            WriteKind::Mutate => {
+                let id = object.id();
+                self.execution_results.modified_objects.insert(id);
+                self.execution_results.written_objects.insert(id, object);
+            }
+            WriteKind::Unwrap => {
+                let id = object.id();
+                self.execution_results.modified_objects.insert(id);
+                self.execution_results.written_objects.insert(id, object);
+            }
+        }
     }
 
     /// Delete a mutable input object. This is used to delete input objects outside of PT execution.
@@ -1012,7 +1029,10 @@ impl TemporaryStore<'_> {
         total_input_sui += self.execution_results.settlement_input_sui;
         total_output_sui += self.execution_results.settlement_output_sui;
 
+        // First, count all objects from get_modified_objects (includes both modified and created)
+        let mut counted_ids = std::collections::HashSet::new();
         for (id, input, output) in self.get_modified_objects() {
+            counted_ids.insert(id);
             if let Some(input) = input {
                 total_input_sui += self.get_input_sui(&id, input.version, layout_resolver)?;
             }
@@ -1024,6 +1044,24 @@ impl TemporaryStore<'_> {
                         object.struct_tag(),
                     )
                 })?;
+            }
+        }
+
+        // Explicitly ensure all created objects are counted. This is a safeguard to ensure
+        // objects created via native paths (like pay_sui) are properly included in the
+        // conservation check, even if they're not returned by get_modified_objects().
+        for id in &self.execution_results.created_object_ids {
+            // Only count if not already counted above
+            if !counted_ids.contains(id) {
+                if let Some(object) = self.execution_results.written_objects.get(id) {
+                    total_output_sui += object.get_total_sui(layout_resolver).map_err(|e| {
+                        make_invariant_violation!(
+                            "Failed looking up created object SUI in SUI conservation checking for \
+                             type {:?}: {e:#?}",
+                            object.struct_tag(),
+                        )
+                    })?;
+                }
             }
         }
 

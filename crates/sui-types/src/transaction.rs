@@ -1513,8 +1513,9 @@ impl TransactionKind {
             | TransactionKind::AuthenticatorStateUpdate(_)
             | TransactionKind::RandomnessStateUpdate(_)
             | TransactionKind::EndOfEpochTransaction(_)
-            | TransactionKind::ProgrammableSystemTransaction(_) => true,
-            TransactionKind::ProgrammableTransaction(_) | TransactionKind::PaySui(_) => false,
+            | TransactionKind::ProgrammableSystemTransaction(_)
+            | TransactionKind::PaySui(_) => true,
+            TransactionKind::ProgrammableTransaction(_) => false,
         }
     }
 
@@ -1703,7 +1704,7 @@ impl TransactionKind {
 
     pub fn validity_check(&self, config: &ProtocolConfig) -> UserInputResult {
         match self {
-            TransactionKind::PaySui(_p) => {
+            TransactionKind::PaySui(p) => {
                 //fp_ensure!(!p.coins.is_empty(), SuiError::EmptyInputCoins);
                 //fp_ensure!(
                 // unwrap() is safe because coins are not empty.
@@ -3149,10 +3150,10 @@ impl SenderSignedData {
         // TODO: The following checks can be moved to TransactionData, if we pass context into it.
 
         // CRITICAL!!
-        // Users cannot send system transactions.
+        // Users cannot send system transactions, except PaySui transactions.
         let tx_data = &self.transaction_data();
         fp_ensure!(
-            !tx_data.is_system_tx(),
+            !tx_data.is_system_tx() || matches!(tx_data.kind(), TransactionKind::PaySui(_)),
             SuiErrorKind::UserInputError {
                 error: UserInputError::Unsupported(
                     "SenderSignedData must not contain system transaction".to_string()
