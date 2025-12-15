@@ -15,7 +15,7 @@ use sui_types::execution_status::{ExecutionFailureStatus, ExecutionStatus};
 use sui_types::gas_coin::GasCoin;
 use sui_types::object::Object;
 use sui_types::programmable_transaction_builder::ProgrammableTransactionBuilder;
-use sui_types::transaction::{PaySui, TransactionData};
+use sui_types::transaction::TransactionData;
 use sui_types::utils::to_sender_signed_transaction;
 use sui_types::{base_types::dbg_addr, crypto::get_key_pair, error::SuiError};
 
@@ -460,6 +460,70 @@ async fn test_pay_sui_success_one_input_coin2() -> anyhow::Result<()> {
         GasCoin::try_from(&gas_object)?.value(),
         coin_amount - 100 - 200 - 300,
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_pay_all_sui_success_multiple_input_coins2() -> anyhow::Result<()> {
+    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
+    let object_id1 = ObjectID::random();
+    let object_id2 = ObjectID::random();
+    let object_id3 = ObjectID::random();
+    let coin_obj1 = Object::with_id_owner_gas_for_testing(object_id1, sender, 3000000);
+    let coin_obj2 = Object::with_id_owner_gas_for_testing(object_id2, sender, 1000);
+    let coin_obj3 = Object::with_id_owner_gas_for_testing(object_id3, sender, 1000);
+    let recipient = dbg_addr(2);
+
+    // Calculate total value of all coins
+    let total_amount = 3000000 + 1000 + 1000; // 3002000
+
+    let res = execute_pay_sui_direct(
+        vec![coin_obj1, coin_obj2, coin_obj3],
+        vec![recipient],
+        vec![total_amount],
+        sender,
+        sender_key,
+    )
+    .await;
+
+    let effects = res.txn_result.unwrap().into_data();
+    assert_eq!(*effects.status(), ExecutionStatus::Success);
+
+    // make sure the recipient receives the total amount
+    assert_eq!(effects.created().len(), 1);
+    let created_obj_id = effects.created()[0].0.0;
+    let created_obj = res
+        .authority_state
+        .get_object(&created_obj_id)
+        .await
+        .unwrap();
+
+    let addr = effects.created()[0].1.get_owner_address()?;
+    assert_eq!(addr, recipient);
+    // The recipient should receive the total amount
+    assert_eq!(GasCoin::try_from(&created_obj)?.value(), total_amount);
+
+    // Since we used zero gas budget (system transaction style), there should be no gas charges.
+    let gas_used = effects.gas_cost_summary().net_gas_usage() as u64;
+    // With zero gas budget (system transaction style), gas should be 0
+    assert_eq!(gas_used, 0, "System transaction should not charge gas");
+
+    // make sure the first object still belongs to the sender but should have minimal or zero value
+    // since we sent the total amount
+    assert_eq!(effects.mutated()[0].0.0, object_id1);
+    assert_eq!(
+        effects.mutated()[0].1.get_address_owner_address().unwrap(),
+        sender
+    );
+    let gas_object = res.authority_state.get_object(&object_id1).await.unwrap();
+    // The first coin should have zero value since we sent the total amount
+    assert_eq!(GasCoin::try_from(&gas_object)?.value(), 0,);
+
+    // make sure the second and third input coins are deleted
+    let deleted_ids: Vec<ObjectID> = effects.deleted().iter().map(|d| d.0).collect();
+    assert!(deleted_ids.contains(&object_id2));
+    assert!(deleted_ids.contains(&object_id3));
 
     Ok(())
 }
