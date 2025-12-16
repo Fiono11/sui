@@ -57,7 +57,7 @@ use sui_types::transaction::{
     SenderSignedData, TransactionData, TransactionDataAPI, TransactionKind, WithdrawFrom,
     WithdrawalTypeArg,
 };
-use sui_types::{SUI_FRAMEWORK_ADDRESS, transaction::PaySui};
+use sui_types::{SUI_FRAMEWORK_ADDRESS, transaction::PaySuiNative};
 use sui_types::{authenticator_state::ActiveJwk, transaction::SharedObjectMutability};
 
 use crate::balance_changes::BalanceChange;
@@ -89,8 +89,8 @@ pub struct SuiPaySui {
     pub amounts: Vec<u64>,
 }
 
-impl From<PaySui> for SuiPaySui {
-    fn from(p: PaySui) -> Self {
+impl From<PaySuiNative> for SuiPaySui {
+    fn from(p: PaySuiNative) -> Self {
         let coins = p.coins.into_iter().map(|c| c.into()).collect();
         SuiPaySui {
             coins,
@@ -557,7 +557,7 @@ impl Display for SuiTransactionBlockKind {
 impl SuiTransactionBlockKind {
     fn try_from_inner(tx: TransactionKind) -> Result<Self, anyhow::Error> {
         Ok(match tx {
-            TransactionKind::PaySui(p) => Self::PaySui(p.into()),
+            TransactionKind::PaySuiNative(p) => Self::PaySui(p.into()),
             TransactionKind::ChangeEpoch(e) => Self::ChangeEpoch(e.into()),
             TransactionKind::Genesis(g) => Self::Genesis(SuiGenesisTransaction {
                 objects: g.objects.iter().map(GenesisObject::id).collect(),

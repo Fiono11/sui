@@ -44,11 +44,12 @@ use sui_types::gas_coin::GasCoin;
 use sui_types::messages_consensus::{
     AuthorityCapabilitiesV2, ConsensusDeterminedVersionAssignments,
 };
-use sui_types::object::Data;
+use sui_types::object::{Data, Object};
 use sui_types::programmable_transaction_builder::ProgrammableTransactionBuilder;
 use sui_types::randomness_state::get_randomness_state_obj_initial_shared_version;
 use sui_types::sui_system_state::SuiSystemStateWrapper;
 use sui_types::supported_protocol_versions::SupportedProtocolVersions;
+use sui_types::transaction::{PaySuiNative, TransactionKind};
 use sui_types::utils::{
     to_sender_signed_transaction, to_sender_signed_transaction_with_multi_signers,
 };
@@ -842,6 +843,74 @@ async fn test_dev_inspect_gas_coin_argument() {
     } = &results[1];
     assert!(mutable_reference_outputs.is_empty());
     assert!(return_values.is_empty());
+}
+
+#[tokio::test]
+async fn test_dev_inspect_gas_coin_argument_pay_sui_native() {
+    let (validator, fullnode, _object_basics) =
+        init_state_with_ids_and_object_basics_with_fullnode(vec![]).await;
+
+    let sender = SuiAddress::random_for_testing_only();
+    let recipient = SuiAddress::random_for_testing_only();
+    let amount = 500;
+
+    // Create a dummy gas object for PaySuiNative
+    let dummy_gas_object =
+        Object::new_gas_with_balance_and_owner_for_testing(DEV_INSPECT_GAS_COIN_VALUE, sender);
+    let gas_object_ref = dummy_gas_object.compute_object_reference();
+
+    // Insert the gas object into both validator and fullnode states
+    // so it can be found during dev_inspect
+    validator
+        .insert_genesis_object(dummy_gas_object.clone())
+        .await;
+    fullnode.insert_genesis_object(dummy_gas_object).await;
+
+    // Create PaySuiNative transaction kind
+    let pay_sui_native = PaySuiNative {
+        coins: vec![gas_object_ref],
+        recipients: vec![recipient],
+        amounts: vec![amount],
+    };
+    let kind = TransactionKind::PaySuiNative(pay_sui_native);
+
+    // PaySuiNative is now supported in dev_inspect (even though it's a system transaction)
+    let dev_inspect_results = fullnode
+        .dev_inspect_transaction_block(
+            sender,
+            kind,
+            None,
+            None,
+            None,
+            Some(vec![gas_object_ref]),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Verify that dev_inspect completed successfully
+    assert!(dev_inspect_results.error.is_none());
+
+    // PaySuiNative doesn't charge gas, so verify gas usage is 0
+    let gas_cost = dev_inspect_results.effects.gas_cost_summary();
+    assert_eq!(
+        gas_cost.net_gas_usage() as u64,
+        0,
+        "PaySuiNative should not charge gas"
+    );
+
+    // Verify the transaction executed successfully
+    assert!(dev_inspect_results.effects.status().is_ok());
+
+    // PaySuiNative returns empty execution results since it's a native transaction
+    // (not executed through Move VM like programmable transactions)
+    if let Some(results) = &dev_inspect_results.results {
+        assert!(
+            results.is_empty(),
+            "PaySuiNative should return empty execution results"
+        );
+    }
 }
 
 #[tokio::test]

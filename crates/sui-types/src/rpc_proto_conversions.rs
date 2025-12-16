@@ -2091,7 +2091,7 @@ impl From<crate::transaction::TransactionKind> for TransactionKind {
         let message = Self::default();
 
         match value {
-            K::PaySui(_) => unimplemented!(),
+            K::PaySuiNative(_) => unimplemented!(),
             K::ProgrammableTransaction(ptb) => message
                 .with_programmable_transaction(ptb)
                 .with_kind(Kind::ProgrammableTransaction),

@@ -41,7 +41,7 @@ impl TransactionBlockKind {
         use TransactionBlockKind as T;
 
         match kind {
-            K::PaySui(_) => todo!(),
+            K::PaySuiNative(_) => todo!(),
             K::ProgrammableTransaction(pt) => T::Programmable(ProgrammableTransactionBlock {
                 native: pt,
                 checkpoint_viewed_at,

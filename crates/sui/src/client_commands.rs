@@ -77,7 +77,7 @@ use sui_types::{
     signature::GenericSignature,
     sui_serde,
     transaction::{
-        InputObjectKind, ObjectArg, PaySui, SenderSignedData, SharedObjectMutability, Transaction,
+        InputObjectKind, ObjectArg, PaySuiNative, SenderSignedData, SharedObjectMutability, Transaction,
         TransactionData, TransactionDataAPI, TransactionKind,
     },
 };
@@ -1528,14 +1528,14 @@ impl SuiClientCommands {
                 let gas_price = context.get_reference_gas_price().await?;
 
                 // Create PaySui transaction kind directly (for dry_run/dev_inspect)
-                let tx_kind = TransactionKind::PaySui(PaySui {
+                let tx_kind = TransactionKind::PaySuiNative(PaySuiNative {
                     coins: coin_refs.clone(),
                     recipients: recipients.clone(),
                     amounts: amounts.clone(),
                 });
 
                 // Create transaction data with zero gas budget (system transaction style)
-                let tx_data = TransactionData::new_pay_sui2(
+                let tx_data = TransactionData::new_pay_native(
                     signer,
                     coin_refs,
                     recipients,
@@ -1608,7 +1608,8 @@ impl SuiClientCommands {
                     .into();
 
                 let sender_signed_data = SenderSignedData::new(tx_data, vec![signature]);
-                let transaction = Envelope::<SenderSignedData, EmptySignInfo>::new(sender_signed_data);
+                let transaction =
+                    Envelope::<SenderSignedData, EmptySignInfo>::new(sender_signed_data);
                 let response = context.execute_transaction_may_fail(transaction).await?;
                 SuiClientCommandResult::TransactionBlock(response)
             }

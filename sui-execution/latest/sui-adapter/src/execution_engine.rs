@@ -72,7 +72,7 @@ mod checked {
     use sui_types::sui_system_state::{ADVANCE_EPOCH_SAFE_MODE_FUNCTION_NAME, AdvanceEpochParams};
     use sui_types::transaction::{
         Argument, AuthenticatorStateExpire, AuthenticatorStateUpdate, CallArg, ChangeEpoch,
-        Command, EndOfEpochTransactionKind, GasData, GenesisTransaction, ObjectArg, PaySui,
+        Command, EndOfEpochTransactionKind, GasData, GenesisTransaction, ObjectArg, PaySuiNative,
         ProgrammableTransaction, StoredExecutionTimeObservations, TransactionKind,
         is_gas_paid_from_address_balance,
     };
@@ -763,7 +763,7 @@ mod checked {
         trace_builder_opt: &mut Option<MoveTraceBuilder>,
     ) -> ResultWithTimings<Mode::ExecutionResults, ExecutionError> {
         let result = match transaction_kind {
-            TransactionKind::PaySui(PaySui {
+            TransactionKind::PaySuiNative(PaySuiNative {
                 coins,
                 recipients,
                 amounts,

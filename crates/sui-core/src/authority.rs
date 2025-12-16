@@ -2710,10 +2710,10 @@ impl AuthorityState {
         }
 
         if transaction_kind.is_system_tx() {
-            return Err(SuiErrorKind::UnsupportedFeatureError {
-                error: "system transactions are not supported".to_string(),
-            }
-            .into());
+            //return Err(SuiErrorKind::UnsupportedFeatureError {
+            //error: "system transactions are not supported".to_string(),
+            //}
+            //.into());
         }
 
         let show_raw_txn_data_and_effects = show_raw_txn_data_and_effects.unwrap_or(false);
@@ -2723,7 +2723,12 @@ impl AuthorityState {
         let max_tx_gas = protocol_config.max_tx_gas();
 
         let price = gas_price.unwrap_or(reference_gas_price);
-        let budget = gas_budget.unwrap_or(max_tx_gas);
+        // PaySuiNative should use zero gas budget (system transaction style) unless explicitly provided
+        let budget = if matches!(transaction_kind, TransactionKind::PaySuiNative(_)) {
+            gas_budget.unwrap_or(0)
+        } else {
+            gas_budget.unwrap_or(max_tx_gas)
+        };
         let owner = gas_sponsor.unwrap_or(sender);
         // Payment might be empty here, but it's fine we'll have to deal with it later after reading all the input objects.
         let payment = gas_objects.unwrap_or_default();
@@ -2794,12 +2799,19 @@ impl AuthorityState {
                 input_objects,
                 receiving_objects,
             )?;
-            let gas_status = SuiGasStatus::new(
-                max_tx_gas,
-                transaction.gas_price(),
-                reference_gas_price,
-                protocol_config,
-            )?;
+            // PaySuiNative with zero budget should use unmetered gas status to not charge gas
+            let gas_status = if matches!(transaction_kind, TransactionKind::PaySuiNative(_))
+                && transaction.gas_budget() == 0
+            {
+                SuiGasStatus::new_unmetered()
+            } else {
+                SuiGasStatus::new(
+                    max_tx_gas,
+                    transaction.gas_price(),
+                    reference_gas_price,
+                    protocol_config,
+                )?
+            };
 
             (gas_status, checked_input_objects)
         } else {

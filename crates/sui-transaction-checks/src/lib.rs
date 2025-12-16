@@ -164,7 +164,8 @@ mod checked {
         _receiving_objects: ReceivingObjects,
     ) -> SuiResult<CheckedInputObjects> {
         kind.validity_check(config)?;
-        if kind.is_system_tx() {
+        // Allow PaySuiNative in dev-inspect even though it's a system transaction
+        if kind.is_system_tx() && !matches!(kind, TransactionKind::PaySuiNative(_)) {
             return Err(UserInputError::Unsupported(format!(
                 "Transaction kind {} is not supported in dev-inspect",
                 kind

@@ -2047,7 +2047,7 @@ impl CheckpointBuilder {
                             ));
                         }
                     }
-                    TransactionKind::PaySui(_) => {
+                    TransactionKind::PaySuiNative(_) => {
                         // TODO
                     }
                 }

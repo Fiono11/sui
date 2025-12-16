@@ -103,7 +103,7 @@ mod address_balance_gas_tests;
 /// 3. the balance of the first input coin after tx is sum(input_coins) - sum(amounts) - actual_gas_cost
 /// 4. all other input coins other than the first one are deleted.
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
-pub struct PaySui {
+pub struct PaySuiNative {
     /// The coins to be used for payment.
     pub coins: Vec<ObjectRef>,
     /// The addresses that will receive payment
@@ -465,7 +465,7 @@ impl RandomnessStateUpdate {
 pub enum TransactionKind {
     /// Pay multiple recipients using multiple SUI coins,
     /// no extra gas payment SUI coin is required.
-    PaySui(PaySui),
+    PaySuiNative(PaySuiNative),
     /// A transaction that allows the interleaving of native commands and Move calls
     ProgrammableTransaction(ProgrammableTransaction),
     /// A system transaction that will update epoch information on-chain.
@@ -1514,7 +1514,7 @@ impl TransactionKind {
             | TransactionKind::RandomnessStateUpdate(_)
             | TransactionKind::EndOfEpochTransaction(_)
             | TransactionKind::ProgrammableSystemTransaction(_)
-            | TransactionKind::PaySui(_) => true,
+            | TransactionKind::PaySuiNative(_) => true,
             TransactionKind::ProgrammableTransaction(_) => false,
         }
     }
@@ -1585,7 +1585,7 @@ impl TransactionKind {
             Self::ProgrammableTransaction(pt) | Self::ProgrammableSystemTransaction(pt) => {
                 Either::Right(Either::Left(pt.shared_input_objects()))
             }
-            Self::Genesis(_) | Self::PaySui(_) => Either::Right(Either::Right(iter::empty())),
+            Self::Genesis(_) | Self::PaySuiNative(_) => Either::Right(Either::Right(iter::empty())),
         }
     }
 
@@ -1599,7 +1599,7 @@ impl TransactionKind {
     pub fn receiving_objects(&self) -> Vec<ObjectRef> {
         match &self {
             TransactionKind::ChangeEpoch(_)
-            | TransactionKind::PaySui(_)
+            | TransactionKind::PaySuiNative(_)
             | TransactionKind::Genesis(_)
             | TransactionKind::ConsensusCommitPrologue(_)
             | TransactionKind::ConsensusCommitPrologueV2(_)
@@ -1619,7 +1619,7 @@ impl TransactionKind {
     /// TODO: use an iterator over references here instead of a Vec to avoid allocations.
     pub fn input_objects(&self) -> UserInputResult<Vec<InputObjectKind>> {
         let input_objects = match &self {
-            Self::PaySui(PaySui { coins, .. }) => coins
+            Self::PaySuiNative(PaySuiNative { coins, .. }) => coins
                 .iter()
                 .map(|o| InputObjectKind::ImmOrOwnedMoveObject(*o))
                 .collect(),
@@ -1704,7 +1704,7 @@ impl TransactionKind {
 
     pub fn validity_check(&self, config: &ProtocolConfig) -> UserInputResult {
         match self {
-            TransactionKind::PaySui(p) => {
+            TransactionKind::PaySuiNative(p) => {
                 //fp_ensure!(!p.coins.is_empty(), SuiError::EmptyInputCoins);
                 //fp_ensure!(
                 // unwrap() is safe because coins are not empty.
@@ -1801,7 +1801,7 @@ impl TransactionKind {
 
     pub fn name(&self) -> &'static str {
         match self {
-            Self::PaySui(_) => "PaySui",
+            Self::PaySuiNative(_) => "PaySui",
             Self::ChangeEpoch(_) => "ChangeEpoch",
             Self::Genesis(_) => "Genesis",
             Self::ConsensusCommitPrologue(_) => "ConsensusCommitPrologue",
@@ -1821,7 +1821,7 @@ impl Display for TransactionKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut writer = String::new();
         match &self {
-            Self::PaySui(p) => {
+            Self::PaySuiNative(p) => {
                 writeln!(writer, "Transaction Kind : Pay SUI")?;
                 writeln!(writer, "Coins:")?;
                 for (object_id, seq, digest) in &p.coins {
@@ -1973,7 +1973,7 @@ pub struct TransactionDataV1 {
 }
 
 impl TransactionData {
-    pub fn new_pay_sui2(
+    pub fn new_pay_native(
         sender: SuiAddress,
         coins: Vec<ObjectRef>,
         recipients: Vec<SuiAddress>,
@@ -1982,7 +1982,7 @@ impl TransactionData {
         gas_budget: u64,
         gas_price: u64,
     ) -> Self {
-        let kind = TransactionKind::PaySui(PaySui {
+        let kind = TransactionKind::PaySuiNative(PaySuiNative {
             coins,
             recipients,
             amounts,
@@ -2866,7 +2866,7 @@ impl TransactionDataAPI for TransactionDataV1 {
             | TransactionKind::ConsensusCommitPrologueV4(_) => true,
 
             TransactionKind::ProgrammableTransaction(_)
-            | TransactionKind::PaySui(_)
+            | TransactionKind::PaySuiNative(_)
             | TransactionKind::ProgrammableSystemTransaction(_)
             | TransactionKind::ChangeEpoch(_)
             | TransactionKind::Genesis(_)
@@ -3153,7 +3153,7 @@ impl SenderSignedData {
         // Users cannot send system transactions, except PaySui transactions.
         let tx_data = &self.transaction_data();
         fp_ensure!(
-            !tx_data.is_system_tx() || matches!(tx_data.kind(), TransactionKind::PaySui(_)),
+            !tx_data.is_system_tx() || matches!(tx_data.kind(), TransactionKind::PaySuiNative(_)),
             SuiErrorKind::UserInputError {
                 error: UserInputError::Unsupported(
                     "SenderSignedData must not contain system transaction".to_string()

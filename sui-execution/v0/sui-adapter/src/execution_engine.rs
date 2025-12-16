@@ -391,7 +391,7 @@ mod checked {
         metrics: Arc<LimitsMetrics>,
     ) -> Result<Mode::ExecutionResults, ExecutionError> {
         match transaction_kind {
-            TransactionKind::PaySui(_) => todo!(),
+            TransactionKind::PaySuiNative(_) => todo!(),
             TransactionKind::ChangeEpoch(change_epoch) => {
                 advance_epoch(
                     change_epoch,

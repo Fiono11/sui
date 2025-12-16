@@ -706,7 +706,7 @@ async fn execute_pay_sui_direct(
     // For system transaction style (no gas costs), use zero gas budget
     // The first coin is used as both input and gas payment
     let gas_payment = input_coin_refs[0];
-    let data = TransactionData::new_pay_sui2(
+    let data = TransactionData::new_pay_native(
         sender,
         input_coin_refs.clone(),
         recipients,

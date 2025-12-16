@@ -44,7 +44,7 @@ impl TransactionKind {
         use TransactionKind as T;
 
         match kind {
-            K::PaySui(_) => todo!(),
+            K::PaySuiNative(_) => todo!(),
             K::Genesis(g) => Some(T::Genesis(GenesisTransaction { native: g, scope })),
             K::ConsensusCommitPrologue(ccp) => Some(T::ConsensusCommitPrologue(
                 ConsensusCommitPrologueTransaction::from_v1(ccp, scope),
