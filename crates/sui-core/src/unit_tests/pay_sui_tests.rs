@@ -89,6 +89,31 @@ async fn test_pay_sui_failure_insufficient_total_balance_one_input_coin() {
 }
 
 #[tokio::test]
+async fn test_pay_sui_failure_insufficient_total_balance_one_input_coin2() {
+    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
+    let coin1 = Object::with_id_owner_gas_for_testing(ObjectID::random(), sender, 150);
+    let recipient1 = dbg_addr(1);
+    let recipient2 = dbg_addr(2);
+
+    let res = execute_pay_sui_direct(
+        vec![coin1],
+        vec![recipient1, recipient2],
+        vec![100, 100],
+        sender,
+        sender_key,
+    )
+    .await;
+
+    assert_eq!(
+        res.txn_result.as_ref().unwrap().status(),
+        &ExecutionStatus::Failure {
+            error: ExecutionFailureStatus::InsufficientCoinBalance,
+            command: None // SplitCoins is the first command in the implementation of pay
+        },
+    );
+}
+
+#[tokio::test]
 async fn test_pay_sui_failure_insufficient_gas_balance_multiple_input_coins() {
     let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
     let coin1 = Object::with_id_owner_gas_for_testing(ObjectID::random(), sender, 800);
@@ -137,6 +162,31 @@ async fn test_pay_sui_failure_insufficient_total_balance_multiple_input_coins() 
         &ExecutionStatus::Failure {
             error: ExecutionFailureStatus::InsufficientCoinBalance,
             command: Some(0) // SplitCoins is the first command in the implementation of pay
+        },
+    );
+}
+
+#[tokio::test]
+async fn test_pay_sui_failure_insufficient_total_balance_multiple_input_coins2() {
+    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
+    let coin1 = Object::with_id_owner_gas_for_testing(ObjectID::random(), sender, 3000);
+    let coin2 = Object::with_id_owner_gas_for_testing(ObjectID::random(), sender, 4000);
+    let recipient1 = dbg_addr(1);
+    let recipient2 = dbg_addr(2);
+
+    let res = execute_pay_sui_direct(
+        vec![coin1, coin2],
+        vec![recipient1, recipient2],
+        vec![4000, 3001],
+        sender,
+        sender_key,
+    )
+    .await;
+    assert_eq!(
+        res.txn_result.as_ref().unwrap().status(),
+        &ExecutionStatus::Failure {
+            error: ExecutionFailureStatus::InsufficientCoinBalance,
+            command: None // SplitCoins is the first command in the implementation of pay
         },
     );
 }
@@ -383,6 +433,20 @@ async fn test_pay_all_sui_success_multiple_input_coins() -> anyhow::Result<()> {
     let gas_object = res.authority_state.get_object(&object_id1).await.unwrap();
     assert_eq!(GasCoin::try_from(&gas_object)?.value(), 3002000 - gas_used,);
     Ok(())
+}
+
+#[tokio::test]
+async fn test_pay_sui_failure_empty_recipients2() {
+    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
+    let coin1 = Object::with_id_owner_gas_for_testing(ObjectID::random(), sender, 1100);
+
+    let res = execute_pay_sui_direct(vec![coin1], vec![], vec![], sender, sender_key).await;
+
+    let effects = res.txn_result.unwrap().into_data();
+    assert_eq!(
+        *effects.status(),
+        ExecutionStatus::new_failure(ExecutionFailureStatus::InvariantViolation, None)
+    );
 }
 
 #[tokio::test]

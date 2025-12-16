@@ -353,21 +353,21 @@ mod checked {
             use ExecutionErrorKind as K;
             match error.kind() {
                 K::InvariantViolation | K::VMInvariantViolation => {
-                    if protocol_config.debug_fatal_on_move_invariant_violation() {
+                    /*if protocol_config.debug_fatal_on_move_invariant_violation() {
                         debug_fatal!(
                             "INVARIANT VIOLATION! Txn Digest: {}, Source: {:?}",
                             transaction_digest,
                             error.source(),
                         );
-                    } else {
-                        #[skip_checked_arithmetic]
-                        tracing::error!(
-                            kind = ?error.kind(),
-                            tx_digest = ?transaction_digest,
-                            "INVARIANT VIOLATION! Source: {:?}",
-                            error.source(),
-                        );
-                    }
+                    } else {*/
+                    #[skip_checked_arithmetic]
+                    tracing::error!(
+                        kind = ?error.kind(),
+                        tx_digest = ?transaction_digest,
+                        "INVARIANT VIOLATION! Source: {:?}",
+                        error.source(),
+                    );
+                    //}
                 }
 
                 K::SuiMoveVerificationError | K::VMVerificationOrDeserializationError => {
