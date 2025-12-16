@@ -408,7 +408,7 @@ impl<'backing> TemporaryStore<'backing> {
     }
 
     /// Write an object with a context. This is used for operations like pay_sui.
-    pub fn write_object<C>(&mut self, _ctx: &C, object: Object, kind: WriteKind) {
+    pub fn write_object(&mut self, object: Object, kind: WriteKind) {
         match kind {
             WriteKind::Create => self.create_object(object),
             WriteKind::Mutate => {

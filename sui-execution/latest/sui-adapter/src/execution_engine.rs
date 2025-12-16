@@ -86,19 +86,7 @@ mod checked {
         sui_system_state::{ADVANCE_EPOCH_FUNCTION_NAME, SUI_SYSTEM_MODULE_NAME},
     };
 
-    /// Context for single transaction operations (e.g., pay_sui)
-    pub struct SingleTxContext {
-        sender: SuiAddress,
-    }
-
-    impl SingleTxContext {
-        pub fn pay_sui(sender: SuiAddress) -> Self {
-            Self { sender }
-        }
-    }
-
     pub fn transfer_coin(
-        ctx: &SingleTxContext,
         temporary_store: &mut TemporaryStore,
         coin: &Coin,
         recipient: SuiAddress,
@@ -118,7 +106,7 @@ mod checked {
             Owner::AddressOwner(recipient),
             previous_transaction,
         );
-        temporary_store.write_object(ctx, new_coin, WriteKind::Create);
+        temporary_store.write_object(new_coin, WriteKind::Create);
     }
 
     fn pay_sui(
@@ -135,15 +123,12 @@ mod checked {
         let mut merged_coin = coins.swap_remove(0);
         merged_coin.merge_coins(&mut coins)?;
 
-        let ctx = SingleTxContext::pay_sui(tx_ctx.borrow().sender());
-
         for (recipient, amount) in recipients.iter().zip(amounts) {
             // unwrap is safe b/c merged_coin value is total_coins, which is greater than total_amount
             let new_coin = merged_coin
                 .split_coin(amount, UID::new(tx_ctx.borrow_mut().fresh_id()))
                 .unwrap();
             transfer_coin(
-                &ctx,
                 temporary_store,
                 &new_coin,
                 *recipient,
@@ -151,7 +136,7 @@ mod checked {
                 tx_ctx.borrow().digest(),
             );
         }
-        update_input_coins(&ctx, temporary_store, coin_objects, &merged_coin, None);
+        update_input_coins(temporary_store, coin_objects, &merged_coin, None);
 
         debug_assert_eq!(total_coins - merged_coin.value(), total_amount);
         Ok(())
@@ -161,7 +146,6 @@ mod checked {
     // It updates the gas_coin_obj based on the updated gas_coin, transfers gas_coin_obj to
     // recipient when needed, and then deletes all other input coins other than gas_coin_obj.
     pub fn update_input_coins(
-        _ctx: &SingleTxContext,
         temporary_store: &mut TemporaryStore,
         coin_objects: &mut Vec<Object>,
         gas_coin: &Coin,
