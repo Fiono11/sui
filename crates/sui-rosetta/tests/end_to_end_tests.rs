@@ -30,7 +30,7 @@ use sui_types::rpc_proto_conversions::ObjectReferenceExt;
 use sui_types::sui_system_state::SUI_SYSTEM_MODULE_NAME;
 use sui_types::transaction::{
     Argument, CallArg, Command, InputObjectKind, ObjectArg, TEST_ONLY_GAS_UNIT_FOR_TRANSFER,
-    Transaction, TransactionData,
+    Transaction, TransactionData, TransactionDataAPI, TransactionKind,
 };
 use sui_types::utils::to_sender_signed_transaction;
 use sui_types::{Identifier, SUI_SYSTEM_PACKAGE_ID};
@@ -638,6 +638,187 @@ async fn test_pay_sui() {
         serde_json::to_string(&ops).unwrap(),
         serde_json::to_string(&ops2).unwrap()
     );
+}
+
+#[tokio::test]
+async fn test_pay_sui_native() {
+    let test_cluster = TestClusterBuilder::new().build().await;
+    let sender = test_cluster.get_address_0();
+    let recipient = test_cluster.get_address_1();
+    let keystore = &test_cluster.wallet.config.keystore;
+
+    let mut client = GrpcClient::new(test_cluster.rpc_url()).unwrap();
+
+    // Get coins for the sender
+    let coins = get_all_coins(&mut client, sender).await.unwrap();
+    assert!(!coins.is_empty(), "Sender should have at least one coin");
+
+    // Get object references for the coins we'll use for payment
+    // We'll use the first coin as both payment coin and gas payment
+    let payment_amount = 1_000_000_000u64; // 1 SUI in MIST
+    let coin_refs: Vec<ObjectRef> = coins
+        .iter()
+        .take(1) // Use first coin for payment
+        .map(|coin| coin.compute_object_reference())
+        .collect();
+
+    let gas_payment = coin_refs[0];
+    let gas_price = client.get_reference_gas_price().await.unwrap();
+    let gas_budget = 1_000_000_000; // 1 SUI in MIST
+
+    // Create PaySuiNative transaction
+    let mut tx_data = TransactionData::new_pay_native(
+        sender,
+        coin_refs.clone(),
+        vec![recipient],
+        vec![payment_amount],
+        gas_payment,
+        gas_budget,
+        gas_price,
+    );
+
+    // Verify the transaction kind is PaySuiNative
+    match tx_data.kind_mut() {
+        TransactionKind::PaySuiNative(pay_sui_native) => {
+            assert_eq!(pay_sui_native.coins.len(), 1);
+            assert_eq!(pay_sui_native.recipients.len(), 1);
+            assert_eq!(pay_sui_native.amounts.len(), 1);
+            assert_eq!(pay_sui_native.recipients[0], recipient);
+            assert_eq!(pay_sui_native.amounts[0], payment_amount);
+        }
+        _ => panic!("Expected PaySuiNative transaction kind"),
+    }
+
+    // Sign the transaction
+    let signature = keystore
+        .sign_secure(&sender, &tx_data, Intent::sui_transaction())
+        .await
+        .unwrap();
+
+    let signed_transaction = Transaction::from_data(tx_data, vec![signature]);
+
+    // Execute the transaction
+    let response = execute_transaction(&mut client, &signed_transaction)
+        .await
+        .map_err(|e| anyhow!("TX execution failed, error: {e}"))
+        .unwrap();
+
+    // Verify transaction succeeded
+    assert!(
+        response.effects().status().success(),
+        "Transaction failed: {:?}",
+        response.effects().status().error()
+    );
+}
+
+#[tokio::test]
+async fn test_pay_sui_multiple_times_native() {
+    let test_cluster = TestClusterBuilder::new()
+        .with_epoch_duration_ms(36000000)
+        .build()
+        .await;
+    let sender = test_cluster.get_address_0();
+    let recipient = test_cluster.get_address_1();
+    let keystore = &test_cluster.wallet.config.keystore;
+
+    let mut client = GrpcClient::new(test_cluster.rpc_url()).unwrap();
+    let gas_price = client.get_reference_gas_price().await.unwrap();
+    let gas_budget = 1_000_000_000; // 1 SUI in MIST
+    let payment_amount = 1_000_000_000u64; // 1 SUI in MIST
+
+    for _i in 1..20 {
+        // Get fresh coins for each iteration since previous transactions may have consumed/merged coins
+        let coins = get_all_coins(&mut client, sender).await.unwrap();
+        assert!(!coins.is_empty(), "Sender should have at least one coin");
+
+        // Get object references for the coins we'll use for payment
+        // We'll use the first coin as both payment coin and gas payment
+        let coin_refs: Vec<ObjectRef> = coins
+            .iter()
+            .take(1) // Use first coin for payment
+            .map(|coin| coin.compute_object_reference())
+            .collect();
+
+        let gas_payment = coin_refs[0];
+
+        // Create PaySuiNative transaction
+        let mut tx_data = TransactionData::new_pay_native(
+            sender,
+            coin_refs.clone(),
+            vec![recipient],
+            vec![payment_amount],
+            gas_payment,
+            gas_budget,
+            gas_price,
+        );
+
+        // Verify the transaction kind is PaySuiNative
+        match tx_data.kind_mut() {
+            TransactionKind::PaySuiNative(pay_sui_native) => {
+                assert_eq!(pay_sui_native.coins.len(), 1);
+                assert_eq!(pay_sui_native.recipients.len(), 1);
+                assert_eq!(pay_sui_native.amounts.len(), 1);
+                assert_eq!(pay_sui_native.recipients[0], recipient);
+                assert_eq!(pay_sui_native.amounts[0], payment_amount);
+            }
+            _ => panic!("Expected PaySuiNative transaction kind"),
+        }
+
+        // Sign the transaction
+        let signature = keystore
+            .sign_secure(&sender, &tx_data, Intent::sui_transaction())
+            .await
+            .unwrap();
+
+        let signed_transaction = Transaction::from_data(tx_data, vec![signature]);
+
+        // Execute the transaction
+        let response = execute_transaction(&mut client, &signed_transaction)
+            .await
+            .map_err(|e| anyhow!("TX execution failed, error: {e}"))
+            .unwrap();
+
+        // Verify transaction succeeded
+        assert!(
+            response.effects().status().success(),
+            "Transaction failed: {:?}",
+            response.effects().status().error()
+        );
+
+        // Wait for transaction to be indexed
+        wait_for_transaction(&mut client, &response.transaction().digest().to_string())
+            .await
+            .unwrap();
+
+        // Fetch using gRPC to verify transaction details
+        let grpc_request = GetTransactionRequest::default()
+            .with_digest(response.transaction().digest().to_string())
+            .with_read_mask(FieldMask::from_paths([
+                "digest",
+                "transaction",
+                "effects",
+                "balance_changes",
+                "events",
+            ]));
+
+        let grpc_response = client
+            .clone()
+            .ledger_client()
+            .get_transaction(grpc_request)
+            .await
+            .unwrap()
+            .into_inner();
+
+        let tx = grpc_response
+            .transaction
+            .expect("Response transaction should not be empty");
+
+        assert!(
+            tx.effects().status().success(),
+            "Transaction failed: {:?}",
+            tx.effects().status().error()
+        );
+    }
 }
 
 #[tokio::test]
