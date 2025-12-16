@@ -3,6 +3,7 @@
 
 mod test_utils;
 
+use crate::test_utils::get_all_coins;
 use anyhow::anyhow;
 use move_core_types::identifier::Identifier;
 use prost_types::FieldMask;
@@ -66,6 +67,78 @@ async fn test_transfer_sui() {
         false,
     )
     .await;
+}
+
+#[tokio::test]
+async fn test_transfer_sui_native() {
+    let network = TestClusterBuilder::new().build().await;
+    let keystore = &network.wallet.config.keystore;
+    let mut client = GrpcClient::new(network.rpc_url()).unwrap();
+    let rgp = client.get_reference_gas_price().await.unwrap();
+
+    let addresses = network.get_addresses();
+    let sender = get_random_address(&addresses, vec![]);
+    let recipient = get_random_address(&addresses, vec![sender]);
+
+    // Get coins for the sender
+    let coins = get_all_coins(&mut client, sender).await.unwrap();
+    assert!(!coins.is_empty(), "Sender should have at least one coin");
+
+    // Get object references for the coins we'll use for payment
+    // We'll use the first coin as both payment coin and gas payment
+    let payment_amount = 50000u64; // Same amount as test_transfer_sui
+    let coin_refs: Vec<ObjectRef> = coins
+        .iter()
+        .take(1) // Use first coin for payment
+        .map(|coin| coin.compute_object_reference())
+        .collect();
+
+    let gas_payment = coin_refs[0];
+    let gas_budget = rgp * TEST_ONLY_GAS_UNIT_FOR_TRANSFER;
+
+    // Create PaySuiNative transaction
+    let mut tx_data = TransactionData::new_pay_native(
+        sender,
+        coin_refs.clone(),
+        vec![recipient],
+        vec![payment_amount],
+        gas_payment,
+        gas_budget,
+        rgp,
+    );
+
+    // Verify the transaction kind is PaySuiNative
+    match tx_data.kind_mut() {
+        TransactionKind::PaySuiNative(pay_sui_native) => {
+            assert_eq!(pay_sui_native.coins.len(), 1);
+            assert_eq!(pay_sui_native.recipients.len(), 1);
+            assert_eq!(pay_sui_native.amounts.len(), 1);
+            assert_eq!(pay_sui_native.recipients[0], recipient);
+            assert_eq!(pay_sui_native.amounts[0], payment_amount);
+        }
+        _ => panic!("Expected PaySuiNative transaction kind"),
+    }
+
+    // Sign the transaction
+    let signature = keystore
+        .sign_secure(&sender, &tx_data, Intent::sui_transaction())
+        .await
+        .unwrap();
+
+    let signed_transaction = Transaction::from_data(tx_data, vec![signature]);
+
+    // Execute the transaction
+    let response = execute_transaction(&mut client, &signed_transaction)
+        .await
+        .map_err(|e| anyhow!("TX execution failed, error: {e}"))
+        .unwrap();
+
+    // Verify transaction succeeded
+    assert!(
+        response.effects().status().success(),
+        "Transaction failed: {:?}",
+        response.effects().status().error()
+    );
 }
 
 #[tokio::test]
