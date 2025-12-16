@@ -4149,6 +4149,110 @@ async fn test_pay_all_sui() -> Result<(), anyhow::Error> {
 }
 
 #[sim_test]
+async fn test_pay_sui_native() -> Result<(), anyhow::Error> {
+    let (mut test_cluster, client, _rgp, objects, recipients, addresses) =
+        test_cluster_helper().await;
+    let (object_id1, object_id2) = (objects[0], objects[1]);
+    let (recipient1, recipient2) = (&recipients[0], &recipients[1]);
+    let (address2, address3) = (addresses[0], addresses[1]);
+    let address1 = test_cluster.get_address_0();
+    let amounts = [1000, 5000];
+
+    // Get initial balances to verify no gas is charged
+    let initial_balance1 = client
+        .coin_read_api()
+        .get_balance(address1, None)
+        .await?
+        .total_balance;
+
+    let context = &mut test_cluster.wallet;
+
+    let pay_sui_native = SuiClientCommands::PaySuiNative {
+        input_coins: vec![object_id1, object_id2],
+        recipients: vec![recipient1.clone(), recipient2.clone()],
+        amounts: amounts.into(),
+        processing: TxProcessingArgs::default(),
+    }
+    .execute(context)
+    .await?;
+
+    // PaySuiNative should succeed and not charge any gas (system transaction style)
+    if let SuiClientCommandResult::TransactionBlock(response) = pay_sui_native {
+        assert!(response.status_ok().unwrap());
+
+        let effects = response.effects.as_ref().unwrap();
+
+        // Verify that no gas was charged (gas_used should be 0)
+        let gas_used = effects.gas_cost_summary().net_gas_usage() as u64;
+        assert_eq!(gas_used, 0, "PaySuiNative should not charge gas");
+
+        // Verify gas coin used was the first input coin
+        assert_eq!(effects.gas_object().object_id(), object_id1);
+
+        // Verify recipients received the correct amounts
+        let objs_refs = client
+            .read_api()
+            .get_owned_objects(
+                address2,
+                Some(SuiObjectResponseQuery::new_with_options(
+                    SuiObjectDataOptions::full_content(),
+                )),
+                None,
+                None,
+            )
+            .await?;
+        assert!(!objs_refs.has_next_page);
+        assert_eq!(objs_refs.data.len(), 1);
+        assert_eq!(
+            client
+                .coin_read_api()
+                .get_balance(address2, None)
+                .await?
+                .total_balance,
+            amounts[0] as u128
+        );
+
+        let objs_refs = client
+            .read_api()
+            .get_owned_objects(
+                address3,
+                Some(SuiObjectResponseQuery::new_with_options(
+                    SuiObjectDataOptions::full_content(),
+                )),
+                None,
+                None,
+            )
+            .await?;
+        assert!(!objs_refs.has_next_page);
+        assert_eq!(objs_refs.data.len(), 1);
+        assert_eq!(
+            client
+                .coin_read_api()
+                .get_balance(address3, None)
+                .await?
+                .total_balance,
+            amounts[1] as u128
+        );
+
+        // Verify that the sender's balance decreased by exactly the amounts sent (no gas)
+        let final_balance1 = client
+            .coin_read_api()
+            .get_balance(address1, None)
+            .await?
+            .total_balance;
+        let expected_decrease = amounts[0] as u128 + amounts[1] as u128;
+        assert_eq!(
+            initial_balance1 - final_balance1,
+            expected_decrease,
+            "Balance should decrease by exactly the amounts sent, with no gas charge"
+        );
+    } else {
+        panic!("PaySuiNative test failed");
+    }
+    Ok(())
+}
+
+#[sim_test]
 async fn test_transfer() -> Result<(), anyhow::Error> {
     let (mut test_cluster, client, rgp, objects, recipients, addresses) =
         test_cluster_helper().await;

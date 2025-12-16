@@ -13,7 +13,7 @@ use sui_protocol_config::{
 use sui_types::base_types::{ObjectID, TransactionDigest};
 use sui_types::executable_transaction::VerifiedExecutableTransaction;
 use sui_types::messages_consensus::Round;
-use sui_types::transaction::SharedInputObject;
+use sui_types::transaction::{SharedInputObject, TransactionDataAPI, TransactionKind};
 use tracing::{debug, trace};
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -122,11 +122,20 @@ impl SharedObjectCongestionTracker {
         cert: &VerifiedExecutableTransaction,
         indirect_state_observer: &mut IndirectStateObserver,
     ) -> u64 {
-        let estimate_us = execution_time_estimator
-            .get_estimate(cert.transaction_data())
-            .as_micros()
-            .try_into()
-            .unwrap_or(u64::MAX);
+        // Only estimate execution time for ProgrammableTransactions.
+        // System transactions like PaySui don't support execution time estimation.
+        let estimate_us = match cert.transaction_data().kind() {
+            TransactionKind::ProgrammableTransaction(_) => execution_time_estimator
+                .get_estimate(cert.transaction_data())
+                .as_micros()
+                .try_into()
+                .unwrap_or(u64::MAX),
+            _ => {
+                // For non-ProgrammableTransactions (e.g., PaySui), return zero cost
+                0
+            }
+        };
+
         if estimate_us >= 15_000 {
             let digest = cert.digest();
             debug!(

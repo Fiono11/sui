@@ -77,7 +77,7 @@ use sui_types::{
     signature::GenericSignature,
     sui_serde,
     transaction::{
-        InputObjectKind, ObjectArg, SenderSignedData, SharedObjectMutability, Transaction,
+        InputObjectKind, ObjectArg, PaySui, SenderSignedData, SharedObjectMutability, Transaction,
         TransactionData, TransactionDataAPI, TransactionKind,
     },
 };
@@ -386,6 +386,27 @@ pub enum SuiClientCommands {
 
         #[clap(flatten)]
         gas_data: GasDataArgs,
+
+        #[clap(flatten)]
+        processing: TxProcessingArgs,
+    },
+
+    /// Pay SUI coins natively to recipients following specified amounts, with input coins.
+    /// Length of recipients must be the same as that of amounts.
+    /// The input coins does not need to include the coin for gas payment, as no gas is charged.
+    PaySuiNative {
+        /// The input coins to be used for pay recipients, including the gas coin.
+        #[clap(long, num_args(1..))]
+        input_coins: Vec<ObjectID>,
+
+        /// The recipient addresses, must be of same length as amounts.
+        /// Aliases of addresses are also accepted as input.
+        #[clap(long, num_args(1..))]
+        recipients: Vec<KeyIdentity>,
+
+        /// The amounts to be paid, following the order of recipients.
+        #[clap(long, num_args(1..))]
+        amounts: Vec<u64>,
 
         #[clap(flatten)]
         processing: TxProcessingArgs,
@@ -1456,6 +1477,140 @@ impl SuiClientCommands {
                     processing,
                 )
                 .await?
+            }
+
+            SuiClientCommands::PaySuiNative {
+                input_coins,
+                recipients,
+                amounts,
+                processing,
+            } => {
+                ensure!(
+                    !input_coins.is_empty(),
+                    "PaySuiNative transaction requires a non-empty list of input coins"
+                );
+                ensure!(
+                    !recipients.is_empty(),
+                    "PaySuiNative transaction requires a non-empty list of recipient addresses"
+                );
+                ensure!(
+                    recipients.len() == amounts.len(),
+                    format!(
+                        "Found {:?} recipient addresses, but {:?} recipient amounts",
+                        recipients.len(),
+                        amounts.len()
+                    ),
+                );
+                let recipients = recipients
+                    .into_iter()
+                    .map(|x| context.get_identity_address(Some(x)))
+                    .collect::<Result<Vec<SuiAddress>, anyhow::Error>>()
+                    .map_err(|e| anyhow!("{e}"))?;
+                let signer = context.get_object_owner(&input_coins[0]).await?;
+                let client = context.get_client().await?;
+                let _ = context.cache_chain_id(&client).await?;
+
+                // Get object refs directly without using transaction builder
+                let mut coin_refs = Vec::new();
+                for coin_id in &input_coins {
+                    let object_read = client
+                        .read_api()
+                        .get_object_with_options(*coin_id, SuiObjectDataOptions::full_content())
+                        .await?;
+                    let object = object_read.object().map_err(|e| {
+                        anyhow!("Object {} not found or is not accessible: {:?}", coin_id, e)
+                    })?;
+                    coin_refs.push(object.object_ref());
+                }
+
+                // Use the first coin as gas payment (required by PaySui, but with zero gas budget)
+                let gas_payment = coin_refs[0];
+                let gas_price = context.get_reference_gas_price().await?;
+
+                // Create PaySui transaction kind directly (for dry_run/dev_inspect)
+                let tx_kind = TransactionKind::PaySui(PaySui {
+                    coins: coin_refs.clone(),
+                    recipients: recipients.clone(),
+                    amounts: amounts.clone(),
+                });
+
+                // Create transaction data with zero gas budget (system transaction style)
+                let tx_data = TransactionData::new_pay_sui2(
+                    signer,
+                    coin_refs,
+                    recipients,
+                    amounts,
+                    gas_payment,
+                    0, // zero gas budget - system transaction style (no charging costs)
+                    gas_price,
+                );
+
+                // Handle processing options
+                let TxProcessingArgs {
+                    tx_digest,
+                    dry_run,
+                    dev_inspect,
+                    serialize_unsigned_transaction,
+                    serialize_signed_transaction,
+                    sender,
+                } = processing;
+
+                ensure!(
+                    !serialize_unsigned_transaction || !serialize_signed_transaction,
+                    "Cannot specify both flags: --serialize-unsigned-transaction and --serialize-signed-transaction."
+                );
+
+                let signer = sender.unwrap_or(signer);
+
+                if serialize_unsigned_transaction {
+                    return Ok(SuiClientCommandResult::SerializedUnsignedTransaction(
+                        tx_data,
+                    ));
+                }
+
+                if tx_digest {
+                    return Ok(SuiClientCommandResult::ComputeTransactionDigest(tx_data));
+                }
+
+                if dry_run {
+                    return execute_dry_run(
+                        context,
+                        signer,
+                        tx_kind,
+                        Some(0),
+                        gas_price,
+                        vec![gas_payment],
+                        None,
+                    )
+                    .await;
+                }
+
+                if dev_inspect {
+                    return execute_dev_inspect(
+                        context,
+                        signer,
+                        tx_kind,
+                        Some(0),
+                        gas_price,
+                        vec![gas_payment],
+                        None,
+                        None,
+                    )
+                    .await;
+                }
+
+                // Sign and execute the transaction
+                let signature = context
+                    .config
+                    .keystore
+                    .sign_secure(&signer, &tx_data, Intent::sui_transaction())
+                    .await?
+                    .into();
+
+                let sender_signed_data = SenderSignedData::new(tx_data, vec![signature]);
+                let transaction = Envelope::<SenderSignedData, EmptySignInfo>::new(sender_signed_data);
+                let response = context.execute_transaction_may_fail(transaction).await?;
+                SuiClientCommandResult::TransactionBlock(response)
             }
 
             SuiClientCommands::Objects { address } => {

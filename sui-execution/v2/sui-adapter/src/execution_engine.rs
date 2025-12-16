@@ -8,27 +8,22 @@ mod checked {
 
     use crate::execution_mode::{self, ExecutionMode};
     use move_binary_format::CompiledModule;
-    use move_core_types::language_storage::StructTag;
     use move_vm_runtime::move_vm::MoveVM;
     use std::{collections::HashSet, sync::Arc};
     use sui_types::balance::{
         BALANCE_CREATE_REWARDS_FUNCTION_NAME, BALANCE_DESTROY_REBATES_FUNCTION_NAME,
         BALANCE_MODULE_NAME,
     };
-    use sui_types::base_types::SequenceNumber;
-    use sui_types::coin::Coin;
     use sui_types::execution_params::ExecutionOrEarlyError;
-    use sui_types::gas_coin::{GasCoin, GAS};
-    use sui_types::id::UID;
+    use sui_types::gas_coin::GAS;
     use sui_types::messages_checkpoint::CheckpointTimestamp;
     use sui_types::metrics::LimitsMetrics;
-    use sui_types::object::{Data, MoveObject, Owner, OBJECT_START_VERSION};
+    use sui_types::object::OBJECT_START_VERSION;
     use sui_types::programmable_transaction_builder::ProgrammableTransactionBuilder;
     use sui_types::randomness_state::{
         RANDOMNESS_MODULE_NAME, RANDOMNESS_STATE_CREATE_FUNCTION_NAME,
         RANDOMNESS_STATE_UPDATE_FUNCTION_NAME,
     };
-    use sui_types::storage::{DeleteKind, WriteKind};
     use sui_types::SUI_RANDOMNESS_STATE_OBJECT_ID;
     use tracing::{info, instrument, trace, warn};
 

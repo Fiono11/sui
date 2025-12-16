@@ -22,7 +22,6 @@ use move_core_types::language_storage::{ModuleId, StructTag, TypeTag};
 use mysten_metrics::monitored_scope;
 use nonempty::NonEmpty;
 use sui_json::{SuiJsonValue, primitive_type};
-use sui_types::SUI_FRAMEWORK_ADDRESS;
 use sui_types::accumulator_event::AccumulatorEvent;
 use sui_types::base_types::{
     EpochId, ObjectID, ObjectRef, SequenceNumber, SuiAddress, TransactionDigest,
@@ -58,6 +57,7 @@ use sui_types::transaction::{
     SenderSignedData, TransactionData, TransactionDataAPI, TransactionKind, WithdrawFrom,
     WithdrawalTypeArg,
 };
+use sui_types::{SUI_FRAMEWORK_ADDRESS, transaction::PaySui};
 use sui_types::{authenticator_state::ActiveJwk, transaction::SharedObjectMutability};
 
 use crate::balance_changes::BalanceChange;
@@ -67,6 +67,38 @@ use crate::{Filter, Page, SuiEvent, SuiMoveAbort, SuiObjectRef};
 
 // similar to EpochId of sui-types but BigInt
 pub type SuiEpochId = BigInt<u64>;
+
+/// Send SUI coins to a list of addresses, following a list of amounts.
+/// only for SUI coin and does not require a separate gas coin object.
+/// Specifically, what pay_sui does are:
+/// 1. debit each input_coin to create new coin following the order of
+/// amounts and assign it to the corresponding recipient.
+/// 2. accumulate all residual SUI from input coins left and deposit all SUI to the first
+/// input coin, then use the first input coin as the gas coin object.
+/// 3. the balance of the first input coin after tx is sum(input_coins) - sum(amounts) - actual_gas_cost
+/// 4. all other input coints other than the first one are deleted.
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone, Eq, PartialEq)]
+#[serde(rename = "PaySui")]
+pub struct SuiPaySui {
+    /// The coins to be used for payment
+    pub coins: Vec<SuiObjectRef>,
+    /// The addresses that will receive payment
+    pub recipients: Vec<SuiAddress>,
+    /// The amounts each recipient will receive.
+    /// Must be the same length as amounts
+    pub amounts: Vec<u64>,
+}
+
+impl From<PaySui> for SuiPaySui {
+    fn from(p: PaySui) -> Self {
+        let coins = p.coins.into_iter().map(|c| c.into()).collect();
+        SuiPaySui {
+            coins,
+            recipients: p.recipients,
+            amounts: p.amounts,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Default)]
 #[serde(
@@ -404,6 +436,7 @@ fn write_obj_changes<T: Display>(
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename = "TransactionBlockKind", tag = "kind")]
 pub enum SuiTransactionBlockKind {
+    PaySui(SuiPaySui),
     /// A system transaction that will update epoch information on-chain.
     ChangeEpoch(SuiChangeEpoch),
     /// A system transaction used for initializing the initial state of the chain.
@@ -432,6 +465,21 @@ impl Display for SuiTransactionBlockKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let mut writer = String::new();
         match &self {
+            Self::PaySui(p) => {
+                writeln!(writer, "Transaction Kind : Pay SUI")?;
+                writeln!(writer, "Coins:")?;
+                for obj_ref in &p.coins {
+                    writeln!(writer, "Object ID : {}", obj_ref.object_id)?;
+                }
+                writeln!(writer, "Recipients:")?;
+                for recipient in &p.recipients {
+                    writeln!(writer, "{}", recipient)?;
+                }
+                writeln!(writer, "Amounts:")?;
+                for amount in &p.amounts {
+                    writeln!(writer, "{}", amount)?
+                }
+            }
             Self::ChangeEpoch(e) => {
                 writeln!(writer, "Transaction Kind: Epoch Change")?;
                 writeln!(writer, "New epoch ID: {}", e.epoch)?;
@@ -509,7 +557,7 @@ impl Display for SuiTransactionBlockKind {
 impl SuiTransactionBlockKind {
     fn try_from_inner(tx: TransactionKind) -> Result<Self, anyhow::Error> {
         Ok(match tx {
-            TransactionKind::PaySui(_) => todo!(),
+            TransactionKind::PaySui(p) => Self::PaySui(p.into()),
             TransactionKind::ChangeEpoch(e) => Self::ChangeEpoch(e.into()),
             TransactionKind::Genesis(g) => Self::Genesis(SuiGenesisTransaction {
                 objects: g.objects.iter().map(GenesisObject::id).collect(),
@@ -682,6 +730,7 @@ impl SuiTransactionBlockKind {
 
     pub fn name(&self) -> &'static str {
         match self {
+            Self::PaySui(_) => "PaySui",
             Self::ChangeEpoch(_) => "ChangeEpoch",
             Self::Genesis(_) => "Genesis",
             Self::ConsensusCommitPrologue(_) => "ConsensusCommitPrologue",

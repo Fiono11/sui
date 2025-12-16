@@ -12,7 +12,6 @@ mod checked {
     use move_core_types::language_storage::StructTag;
     use move_trace_format::format::MoveTraceBuilder;
     use move_vm_runtime::move_vm::MoveVM;
-    use mysten_common::debug_fatal;
     use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc};
     use sui_types::accumulator_root::{ACCUMULATOR_ROOT_CREATE_FUNC, ACCUMULATOR_ROOT_MODULE};
     use sui_types::balance::{
