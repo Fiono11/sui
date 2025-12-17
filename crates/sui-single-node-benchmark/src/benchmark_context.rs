@@ -12,12 +12,12 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use sui_config::node::RunWithRange;
 use sui_core::authority::shared_object_version_manager::{AssignedTxAndVersions, AssignedVersions};
 use sui_core::mock_checkpoint_builder::ValidatorKeypairProvider;
 use sui_test_transaction_builder::PublishData;
-use sui_types::base_types::{ObjectID, ObjectRef, SequenceNumber, SuiAddress};
+use sui_types::base_types::{ObjectID, ObjectRef, SequenceNumber, SuiAddress, TransactionDigest};
 use sui_types::effects::{TransactionEffects, TransactionEffectsAPI};
 use sui_types::messages_grpc::HandleTransactionResponse;
 use sui_types::transaction::{
@@ -30,6 +30,9 @@ pub struct BenchmarkContext {
     user_accounts: BTreeMap<SuiAddress, Account>,
     admin_account: Account,
     benchmark_component: Component,
+    measure_latency: bool,
+    execution_start_timestamps: Arc<Mutex<HashMap<TransactionDigest, std::time::Instant>>>,
+    latencies: Arc<Mutex<Vec<f64>>>,
 }
 
 impl BenchmarkContext {
@@ -37,6 +40,7 @@ impl BenchmarkContext {
         workload: Workload,
         benchmark_component: Component,
         print_sample_tx: bool,
+        measure_latency: bool,
     ) -> Self {
         // Reserve 1 account for package publishing.
         let mut num_accounts = workload.num_accounts() + 1;
@@ -64,6 +68,9 @@ impl BenchmarkContext {
             user_accounts,
             admin_account,
             benchmark_component,
+            measure_latency,
+            execution_start_timestamps: Arc::new(Mutex::new(HashMap::new())),
+            latencies: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -293,11 +300,38 @@ impl BenchmarkContext {
             transactions.len()
         );
 
+        let execution_start_timestamps = if self.measure_latency {
+            self.execution_start_timestamps.clone()
+        } else {
+            Arc::new(Mutex::new(HashMap::new()))
+        };
+        let latencies = if self.measure_latency {
+            self.latencies.clone()
+        } else {
+            Arc::new(Mutex::new(Vec::new()))
+        };
+
         let is_consensus_tx = transactions.iter().any(|tx| tx.is_consensus_tx());
         if is_consensus_tx {
             // With shared objects, we must execute each transaction in order.
             for transaction in transactions {
                 let key = transaction.key();
+                let digest = *transaction.digest();
+                let execution_start_timestamps = execution_start_timestamps.clone();
+                let latencies = latencies.clone();
+                let measure_latency = self.measure_latency;
+
+                let execution_start = if measure_latency {
+                    let start = std::time::Instant::now();
+                    execution_start_timestamps
+                        .lock()
+                        .unwrap()
+                        .insert(digest, start);
+                    start
+                } else {
+                    std::time::Instant::now()
+                };
+
                 self.validator
                     .execute_certificate(
                         transaction,
@@ -305,6 +339,20 @@ impl BenchmarkContext {
                         self.benchmark_component,
                     )
                     .await;
+
+                if measure_latency {
+                    let execution_end = std::time::Instant::now();
+                    if execution_start_timestamps
+                        .lock()
+                        .unwrap()
+                        .remove(&digest)
+                        .is_some()
+                    {
+                        let latency_ms =
+                            execution_end.duration_since(execution_start).as_secs_f64() * 1000.0;
+                        latencies.lock().unwrap().push(latency_ms);
+                    }
+                }
             }
         } else {
             let tasks: FuturesUnordered<_> = transactions
@@ -312,14 +360,45 @@ impl BenchmarkContext {
                 .map(|tx| {
                     let validator = self.validator();
                     let component = self.benchmark_component;
+                    let digest = *tx.digest();
+                    let execution_start_timestamps = execution_start_timestamps.clone();
+                    let latencies = latencies.clone();
+                    let measure_latency = self.measure_latency;
                     tokio::spawn(async move {
-                        validator
+                        let execution_start = if measure_latency {
+                            let start = std::time::Instant::now();
+                            execution_start_timestamps
+                                .lock()
+                                .unwrap()
+                                .insert(digest, start);
+                            start
+                        } else {
+                            std::time::Instant::now()
+                        };
+
+                        let effects = validator
                             .execute_certificate(
                                 tx,
                                 &AssignedVersions::new(vec![], None),
                                 component,
                             )
-                            .await
+                            .await;
+
+                        if measure_latency {
+                            let execution_end = std::time::Instant::now();
+                            if execution_start_timestamps
+                                .lock()
+                                .unwrap()
+                                .remove(&digest)
+                                .is_some()
+                            {
+                                let latency_ms =
+                                    execution_end.duration_since(execution_start).as_secs_f64()
+                                        * 1000.0;
+                                latencies.lock().unwrap().push(latency_ms);
+                            }
+                        }
+                        effects
                     })
                 })
                 .collect();
@@ -335,6 +414,44 @@ impl BenchmarkContext {
             elapsed,
             tx_count as f64 / elapsed
         );
+
+        if self.measure_latency {
+            self.report_latency_statistics();
+        }
+    }
+
+    fn report_latency_statistics(&self) {
+        let latencies = self.latencies.lock().unwrap();
+        if latencies.is_empty() {
+            warn!("No latency data collected");
+            return;
+        }
+
+        let mut sorted = latencies.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let count = sorted.len();
+        let min = sorted[0];
+        let max = sorted[count - 1];
+        let sum: f64 = sorted.iter().sum();
+        let avg = sum / count as f64;
+
+        // Calculate percentiles
+        let p50 = sorted[count / 2];
+        let p90 = sorted[(count * 9) / 10];
+        let p95 = sorted[(count * 19) / 20];
+        let p99 = sorted[(count * 99) / 100];
+
+        info!("=== Execution Latency Statistics (ms) ===");
+        info!("Count: {}", count);
+        info!("Min:   {:.2}", min);
+        info!("Max:   {:.2}", max);
+        info!("Avg:   {:.2}", avg);
+        info!("P50:   {:.2}", p50);
+        info!("P90:   {:.2}", p90);
+        info!("P95:   {:.2}", p95);
+        info!("P99:   {:.2}", p99);
+        info!("=========================================");
     }
 
     pub(crate) async fn benchmark_transaction_execution_in_memory(
@@ -370,6 +487,10 @@ impl BenchmarkContext {
             tx_count as f64 / elapsed,
             in_memory_store.get_num_object_reads() as f64 / tx_count as f64
         );
+
+        if self.measure_latency {
+            self.report_latency_statistics();
+        }
     }
 
     /// Print out a sample transaction and its effects so that we can get a rough idea
@@ -493,22 +614,59 @@ impl BenchmarkContext {
         transactions: Vec<CertifiedTransaction>,
         assigned_versions: AssignedTxAndVersions,
     ) -> Vec<TransactionEffects> {
+        let execution_start_timestamps = if self.measure_latency {
+            self.execution_start_timestamps.clone()
+        } else {
+            Arc::new(Mutex::new(HashMap::new()))
+        };
+        let latencies = if self.measure_latency {
+            self.latencies.clone()
+        } else {
+            Arc::new(Mutex::new(Vec::new()))
+        };
+
         let is_consensus_tx = transactions.iter().any(|tx| tx.is_consensus_tx());
         let assigned_versions = assigned_versions.into_map();
         if is_consensus_tx {
             // With shared objects, we must execute each transaction in order.
             let mut effects = Vec::new();
             for transaction in transactions {
+                let digest = *transaction.digest();
                 let assigned_versions = assigned_versions.get(&transaction.key()).unwrap();
-                effects.push(
-                    self.validator
-                        .execute_transaction_in_memory(
-                            store.clone(),
-                            transaction,
-                            assigned_versions,
-                        )
-                        .await,
-                );
+                let execution_start_timestamps = execution_start_timestamps.clone();
+                let latencies = latencies.clone();
+                let measure_latency = self.measure_latency;
+
+                let execution_start = if measure_latency {
+                    let start = std::time::Instant::now();
+                    execution_start_timestamps
+                        .lock()
+                        .unwrap()
+                        .insert(digest, start);
+                    start
+                } else {
+                    std::time::Instant::now()
+                };
+
+                let effect = self
+                    .validator
+                    .execute_transaction_in_memory(store.clone(), transaction, assigned_versions)
+                    .await;
+
+                if measure_latency {
+                    let execution_end = std::time::Instant::now();
+                    if execution_start_timestamps
+                        .lock()
+                        .unwrap()
+                        .remove(&digest)
+                        .is_some()
+                    {
+                        let latency_ms =
+                            execution_end.duration_since(execution_start).as_secs_f64() * 1000.0;
+                        latencies.lock().unwrap().push(latency_ms);
+                    }
+                }
+                effects.push(effect);
             }
             effects
         } else {
@@ -517,14 +675,45 @@ impl BenchmarkContext {
                 .map(|tx| {
                     let store = store.clone();
                     let validator = self.validator();
+                    let digest = *tx.digest();
+                    let execution_start_timestamps = execution_start_timestamps.clone();
+                    let latencies = latencies.clone();
+                    let measure_latency = self.measure_latency;
                     tokio::spawn(async move {
-                        validator
+                        let execution_start = if measure_latency {
+                            let start = std::time::Instant::now();
+                            execution_start_timestamps
+                                .lock()
+                                .unwrap()
+                                .insert(digest, start);
+                            start
+                        } else {
+                            std::time::Instant::now()
+                        };
+
+                        let effect = validator
                             .execute_transaction_in_memory(
                                 store,
                                 tx,
                                 &AssignedVersions::new(vec![], None),
                             )
-                            .await
+                            .await;
+
+                        if measure_latency {
+                            let execution_end = std::time::Instant::now();
+                            if execution_start_timestamps
+                                .lock()
+                                .unwrap()
+                                .remove(&digest)
+                                .is_some()
+                            {
+                                let latency_ms =
+                                    execution_end.duration_since(execution_start).as_secs_f64()
+                                        * 1000.0;
+                                latencies.lock().unwrap().push(latency_ms);
+                            }
+                        }
+                        effect
                     })
                 })
                 .collect();

@@ -42,5 +42,16 @@ The benchmark supports various component:
 - `checkpoint-executor`: in this mode, we benchmark how long it takes for the checkpoint executor to execute all checkpoints (i.e. all transactions in them) for the entire epoch. We first construct transactions and effects by actually executing them, and revert them as if they were never executed, construct checkpoints using the results, and then start the checkpoint executor. The size of checkpoints can be controlled with `--checkpoint-size`.
 
 
+### Latency Measurement
+To measure execution latency (time from when execution starts to when it completes), use the `--measure-latency` flag. Note that this flag must come before the subcommand:
+```
+cargo run --release --bin sui-single-node-benchmark -- --measure-latency ptb --use-pay-sui-native
+```
+Or when running the binary directly:
+```
+./target/release/sui-single-node-benchmark --measure-latency ptb --use-pay-sui-native
+```
+This will report execution latency statistics including min, max, average, and percentiles (P50, P90, P95, P99) in milliseconds. This measures only the execution time, excluding transaction creation and certification overhead.
+
 ### Profiling
 If you are interested in profiling Sui, you can start the benchmark, wait for it to print out "Started execution...", and then attach a profiler to the process.

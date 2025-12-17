@@ -23,8 +23,9 @@ pub async fn run_benchmark(
     checkpoint_size: usize,
     print_sample_tx: bool,
     skip_signing: bool,
+    measure_latency: bool,
 ) {
-    let mut ctx = BenchmarkContext::new(workload.clone(), component, print_sample_tx).await;
+    let mut ctx = BenchmarkContext::new(workload.clone(), component, print_sample_tx, measure_latency).await;
     let tx_generator = workload.create_tx_generator(&mut ctx).await;
     let transactions = ctx.generate_transactions(tx_generator).await;
     if matches!(component, Component::TxnSigning) {

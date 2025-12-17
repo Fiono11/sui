@@ -24,12 +24,16 @@ async fn benchmark_non_move_transactions_smoke_test() {
                         num_mints: 0,
                         nft_size: 528,
                         use_batch_mint: false,
+                        use_pay_sui_native: false,
+                        num_recipients: 0,
+                        amount_per_recipient: 0,
                     },
                 ),
                 component,
                 1000,
                 false,
                 skip_signing,
+                false,
             )
             .await;
         }
@@ -52,12 +56,16 @@ async fn benchmark_move_transactions_smoke_test() {
                         num_mints: 2,
                         nft_size: 528,
                         use_batch_mint: false,
+                        use_pay_sui_native: false,
+                        num_recipients: 0,
+                        amount_per_recipient: 0,
                     },
                 ),
                 component,
                 1000,
                 false,
                 skip_signing,
+                false,
             )
             .await;
         }
@@ -80,12 +88,16 @@ async fn benchmark_batch_mint_smoke_test() {
                         num_mints: 10,
                         nft_size: 256,
                         use_batch_mint: true,
+                        use_pay_sui_native: false,
+                        num_recipients: 0,
+                        amount_per_recipient: 0,
                     },
                 ),
                 component,
                 1000,
                 false,
                 skip_signing,
+                false,
             )
             .await;
         }
@@ -114,6 +126,7 @@ async fn benchmark_publish_from_source() {
             1000,
             false,
             false,
+            false,
         )
         .await;
     }
@@ -139,6 +152,7 @@ async fn benchmark_publish_from_bytecode() {
             ),
             component,
             1000,
+            false,
             false,
             false,
         )

@@ -34,6 +34,12 @@ pub struct Command {
     #[arg(
         long,
         default_value_t = false,
+        help = "If true, measure and report execution latency statistics (time from execution start to completion)"
+    )]
+    pub measure_latency: bool,
+    #[arg(
+        long,
+        default_value_t = false,
         help = "If true, skip signing on the validators, instead, creating certificates directly using validator secrets"
     )]
     pub skip_signing: bool,
@@ -170,8 +176,8 @@ impl WorkloadKind {
             // Each transaction will always have 1 gas object, plus the number of owned objects that will be transferred.
             // For PaySuiNative, we need at least 1 coin (used as gas), but can use more for payments.
             // We'll use 1 coin per recipient + 1 for gas to ensure we have enough coins.
-            WorkloadKind::PTB { 
-                num_transfers, 
+            WorkloadKind::PTB {
+                num_transfers,
                 use_pay_sui_native,
                 num_recipients,
                 ..
@@ -183,7 +189,7 @@ impl WorkloadKind {
                 } else {
                     *num_transfers + 1
                 }
-            },
+            }
             WorkloadKind::Publish { .. } => 1,
         }
     }

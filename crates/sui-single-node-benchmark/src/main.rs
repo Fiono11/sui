@@ -20,6 +20,7 @@ async fn main() {
         args.checkpoint_size,
         args.print_sample_tx,
         args.skip_signing,
+        args.measure_latency,
     )
     .await;
 
