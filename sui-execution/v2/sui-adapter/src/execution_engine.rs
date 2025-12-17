@@ -515,6 +515,7 @@ mod checked {
     ) -> Result<Mode::ExecutionResults, ExecutionError> {
         let result = match transaction_kind {
             TransactionKind::PaySuiNative(_) => todo!(),
+            TransactionKind::DelegateStakingNative(_) => todo!(),
             TransactionKind::ChangeEpoch(change_epoch) => {
                 let builder = ProgrammableTransactionBuilder::new();
                 advance_epoch(

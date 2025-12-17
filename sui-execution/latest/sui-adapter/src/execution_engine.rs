@@ -23,7 +23,7 @@ mod checked {
     use sui_types::gas_coin::{GAS, GasCoin};
     use sui_types::messages_checkpoint::CheckpointTimestamp;
     use sui_types::metrics::LimitsMetrics;
-    use sui_types::object::{Data, MoveObject, OBJECT_START_VERSION, Owner};
+    use sui_types::object::{Data, OBJECT_START_VERSION, Owner};
     use sui_types::programmable_transaction_builder::ProgrammableTransactionBuilder;
     use sui_types::randomness_state::{
         RANDOMNESS_MODULE_NAME, RANDOMNESS_STATE_CREATE_FUNCTION_NAME,
@@ -38,6 +38,7 @@ mod checked {
     use crate::type_layout_resolver::TypeLayoutResolver;
     use crate::{gas_charger::GasCharger, temporary_store::TemporaryStore};
     use move_core_types::ident_str;
+    use serde::{Deserialize, Serialize};
     use sui_move_natives::all_natives;
     use sui_protocol_config::{
         LimitThresholdCrossed, PerObjectCongestionControlMode, ProtocolConfig, check_limit_by_meter,
@@ -64,7 +65,6 @@ mod checked {
     use sui_types::execution_status::ExecutionStatus;
     use sui_types::gas::GasCostSummary;
     use sui_types::gas::SuiGasStatus;
-    use sui_types::id::UID;
     use sui_types::inner_temporary_store::InnerTemporaryStore;
     use sui_types::storage::{BackingStore, WriteKind};
     #[cfg(msim)]
@@ -72,17 +72,25 @@ mod checked {
     use sui_types::sui_system_state::{ADVANCE_EPOCH_SAFE_MODE_FUNCTION_NAME, AdvanceEpochParams};
     use sui_types::transaction::{
         Argument, AuthenticatorStateExpire, AuthenticatorStateUpdate, CallArg, ChangeEpoch,
-        Command, EndOfEpochTransactionKind, GasData, GenesisTransaction, ObjectArg, PaySuiNative,
-        ProgrammableTransaction, StoredExecutionTimeObservations, TransactionKind,
-        is_gas_paid_from_address_balance,
+        Command, DelegateStakingNative, EndOfEpochTransactionKind, GasData, GenesisTransaction,
+        ObjectArg, PaySuiNative, ProgrammableTransaction, StoredExecutionTimeObservations,
+        TransactionKind, is_gas_paid_from_address_balance,
     };
     use sui_types::transaction::{CheckedInputObjects, RandomnessStateUpdate};
     use sui_types::{
         SUI_AUTHENTICATOR_STATE_OBJECT_ID, SUI_FRAMEWORK_ADDRESS, SUI_FRAMEWORK_PACKAGE_ID,
-        SUI_SYSTEM_PACKAGE_ID,
-        base_types::{SuiAddress, TransactionDigest, TxContext},
-        object::{Object, ObjectInner},
-        sui_system_state::{ADVANCE_EPOCH_FUNCTION_NAME, SUI_SYSTEM_MODULE_NAME},
+        SUI_SYSTEM_ADDRESS, SUI_SYSTEM_PACKAGE_ID,
+        base_types::{MoveObjectType, SuiAddress, TransactionDigest, TxContext},
+        dynamic_field::{Field, get_dynamic_field_object_from_store},
+        event::Event,
+        governance::StakedSui,
+        id::{ID, UID},
+        object::{MoveObject, Object, ObjectInner},
+        sui_system_state::{
+            ADVANCE_EPOCH_FUNCTION_NAME, SUI_SYSTEM_MODULE_NAME, SuiSystemStateTrait,
+            get_sui_system_state, get_sui_system_state_wrapper,
+            sui_system_state_inner_v1::SuiSystemStateInnerV1,
+        },
     };
 
     pub fn transfer_coin(
@@ -138,6 +146,316 @@ mod checked {
         update_input_coins(temporary_store, coin_objects, &merged_coin, None);
 
         debug_assert_eq!(total_coins - merged_coin.value(), total_amount);
+        Ok(())
+    }
+
+    /// Native implementation of delegate staking that modifies the system state directly.
+    /// This function performs the following operations:
+    /// 1. Merges all input coins into a single balance
+    /// 2. Reads the SuiSystemState from the store
+    /// 3. Finds the validator in the active validator set
+    /// 4. Updates the validator's staking pool pending_stake
+    /// 5. Updates the validator's next_epoch_stake
+    /// 6. Creates a StakedSui object and transfers it to the sender
+    /// 7. Writes back the modified system state
+    fn delegate_staking_native(
+        temporary_store: &mut TemporaryStore,
+        store: &dyn BackingStore,
+        coin_objects: &mut Vec<Object>,
+        validator: SuiAddress,
+        amount: Option<u64>,
+        tx_ctx: Rc<RefCell<TxContext>>,
+        protocol_config: &ProtocolConfig,
+    ) -> Result<(), ExecutionError> {
+        // Step 1: Check and merge coins (similar to pay_sui)
+        let (mut coins, _coin_type) = check_coins(coin_objects, Some(GasCoin::type_()))?;
+
+        // Calculate total balance and determine stake amount
+        let total_balance: u64 = coins.iter().fold(0u64, |acc, c| acc + c.value());
+        let stake_amount = amount.unwrap_or(total_balance);
+
+        fp_ensure!(
+            stake_amount > 0 && stake_amount <= total_balance,
+            ExecutionError::new_with_source(
+                ExecutionErrorKind::InvariantViolation,
+                format!(
+                    "Invalid stake amount: {} (total balance: {})",
+                    stake_amount, total_balance
+                )
+            )
+        );
+
+        // Merge coins to get the balance
+        let mut merged_coin = coins.swap_remove(0);
+        if !coins.is_empty() {
+            merged_coin.merge_coins(&mut coins)?;
+        }
+
+        // Extract the stake balance from merged coin
+        let (stake_balance, remaining_coin_opt) = if stake_amount == total_balance {
+            // Use the entire balance - we'll delete the coin later
+            // We need to clone here because we'll delete merged_coin later
+            (merged_coin.balance.clone(), None)
+        } else {
+            // Split the coin and get the balance
+            let split_coin = merged_coin
+                .split_coin(stake_amount, UID::new(tx_ctx.borrow_mut().fresh_id()))
+                .map_err(|e| {
+                    ExecutionError::new_with_source(
+                        ExecutionErrorKind::InvariantViolation,
+                        format!("Failed to split coin: {:?}", e),
+                    )
+                })?;
+            // merged_coin now has the remaining balance after split
+            (split_coin.balance, Some(merged_coin))
+        };
+
+        // Step 2: Read system state and find validator
+        let system_state = get_sui_system_state(store.as_object_store()).map_err(|e| {
+            ExecutionError::new_with_source(
+                ExecutionErrorKind::InvariantViolation,
+                format!("Failed to read system state: {:?}", e),
+            )
+        })?;
+
+        // Get system state summary to find validator
+        let system_state_summary = system_state.into_sui_system_state_summary();
+
+        // Find validator by address in active validators
+        let validator_info = system_state_summary
+            .active_validators
+            .iter()
+            .find(|v| v.sui_address == validator)
+            .ok_or_else(|| {
+                ExecutionError::new_with_source(
+                    ExecutionErrorKind::InvalidGasObject,
+                    format!("Validator {} not found in active validator set", validator),
+                )
+            })?;
+
+        let pool_id = ID::new(validator_info.staking_pool_id);
+        let pool_id_for_event = pool_id.clone(); // Clone for event emission
+        let is_preactive = validator_info.staking_pool_activation_epoch.is_none();
+
+        // Step 3: Update staking pool and validator in system state
+        // Get system state wrapper to access the inner state object
+        let wrapper = get_sui_system_state_wrapper(store.as_object_store()).map_err(|e| {
+            ExecutionError::new_with_source(
+                ExecutionErrorKind::InvariantViolation,
+                format!("Failed to read system state wrapper: {:?}", e),
+            )
+        })?;
+
+        // Get the system state inner object as a dynamic field
+        let old_state_object = get_dynamic_field_object_from_store(
+            store.as_object_store(),
+            wrapper.id.id.bytes,
+            &wrapper.version,
+        )
+        .map_err(|e| {
+            ExecutionError::new_with_source(
+                ExecutionErrorKind::InvariantViolation,
+                format!("Failed to read system state inner object: {:?}", e),
+            )
+        })?;
+
+        // Clone and modify the system state
+        let mut new_state_object = old_state_object.clone();
+        let move_object = new_state_object.data.try_as_move_mut().ok_or_else(|| {
+            ExecutionError::new_with_source(
+                ExecutionErrorKind::InvariantViolation,
+                "System state inner object must be a Move object",
+            )
+        })?;
+
+        // Deserialize, modify, and reserialize based on version
+        match wrapper.version {
+            1 => {
+                let mut field: Field<u64, SuiSystemStateInnerV1> =
+                    bcs::from_bytes(move_object.contents()).map_err(|e| {
+                        ExecutionError::new_with_source(
+                            ExecutionErrorKind::InvariantViolation,
+                            format!("Failed to deserialize system state: {:?}", e),
+                        )
+                    })?;
+
+                // Find validator in active_validators by address
+                let validator_idx = field
+                    .value
+                    .validators
+                    .active_validators
+                    .iter()
+                    .position(|v| v.verified_metadata().sui_address == validator)
+                    .ok_or_else(|| {
+                        ExecutionError::new_with_source(
+                            ExecutionErrorKind::InvalidGasObject,
+                            format!("Validator {} not found in active validators", validator),
+                        )
+                    })?;
+
+                // Update validator's staking pool and next_epoch_stake
+                let validator = &mut field.value.validators.active_validators[validator_idx];
+                validator.staking_pool.pending_stake = validator
+                    .staking_pool
+                    .pending_stake
+                    .saturating_add(stake_amount);
+
+                // If preactive, process pending stake immediately
+                // For preactive pools, exchange rate is always 1:1
+                if is_preactive {
+                    // Process pending stake: add to sui_balance
+                    // For preactive pools, pool_token_balance = sui_balance (1:1 exchange rate)
+                    validator.staking_pool.sui_balance = validator
+                        .staking_pool
+                        .sui_balance
+                        .saturating_add(validator.staking_pool.pending_stake);
+                    validator.staking_pool.pool_token_balance = validator.staking_pool.sui_balance;
+                    validator.staking_pool.pending_stake = 0;
+                }
+
+                // Update next_epoch_stake
+                validator.next_epoch_stake =
+                    validator.next_epoch_stake.saturating_add(stake_amount);
+
+                // Serialize back
+                let new_contents = bcs::to_bytes(&field).map_err(|e| {
+                    ExecutionError::new_with_source(
+                        ExecutionErrorKind::InvariantViolation,
+                        format!("Failed to serialize modified system state: {:?}", e),
+                    )
+                })?;
+
+                // Update the move object contents
+                move_object.set_contents_unsafe(new_contents);
+            }
+            2 => {
+                // V2 implementation would go here - similar pattern
+                return Err(ExecutionError::new_with_source(
+                    ExecutionErrorKind::InvariantViolation,
+                    "System state V2 not yet supported for native delegate staking",
+                ));
+            }
+            _ => {
+                return Err(ExecutionError::new_with_source(
+                    ExecutionErrorKind::InvariantViolation,
+                    format!("Unsupported system state version: {}", wrapper.version),
+                ));
+            }
+        }
+
+        // Write back the modified system state using mutate_child_object
+        temporary_store.mutate_child_object(old_state_object, new_state_object);
+
+        // Step 4: Create StakedSui object
+        let current_epoch = tx_ctx.borrow().epoch();
+        let stake_activation_epoch = current_epoch + 1;
+
+        // Construct StakedSui using unsafe code since fields are private
+        // This is safe because we're constructing a valid StakedSui with the correct field types
+        let staked_sui = unsafe {
+            std::mem::transmute::<
+                (
+                    sui_types::id::UID,
+                    sui_types::id::ID,
+                    u64,
+                    sui_types::balance::Balance,
+                ),
+                StakedSui,
+            >((
+                UID::new(tx_ctx.borrow_mut().fresh_id()),
+                pool_id,
+                stake_activation_epoch,
+                stake_balance,
+            ))
+        };
+
+        // Step 5: Create StakedSui object and transfer to sender
+        let contents = bcs::to_bytes(&staked_sui).map_err(|e| {
+            ExecutionError::new_with_source(
+                ExecutionErrorKind::InvariantViolation,
+                format!("Failed to serialize StakedSui: {:?}", e),
+            )
+        })?;
+        let move_object = unsafe {
+            MoveObject::new_from_execution(
+                MoveObjectType::from(StakedSui::type_()),
+                true, // StakedSui has store ability, so has_public_transfer is true
+                SequenceNumber::new(),
+                contents,
+                protocol_config,
+                true, // system_mutation = true since this is a system operation
+            )
+        }
+        .map_err(|e| {
+            ExecutionError::new_with_source(
+                ExecutionErrorKind::InvariantViolation,
+                format!("Failed to create StakedSui MoveObject: {:?}", e),
+            )
+        })?;
+        let staked_sui_object = Object::new_move(
+            move_object,
+            Owner::AddressOwner(tx_ctx.borrow().sender()),
+            tx_ctx.borrow().digest(),
+        );
+        temporary_store.write_object(staked_sui_object, WriteKind::Create);
+
+        // Step 6: Update remaining coin (if any) or delete input coins
+        if let Some(remaining_coin) = remaining_coin_opt {
+            // Update remaining coin with remaining balance
+            update_input_coins(temporary_store, coin_objects, &remaining_coin, None);
+        } else {
+            // Delete all input coins as they were all staked
+            for coin_object in coin_objects.iter() {
+                temporary_store.delete_input_object(&coin_object.id());
+            }
+        }
+
+        // Step 7: Emit StakingRequestEvent
+        // Create the event struct matching the Move definition
+        #[derive(Serialize, Deserialize)]
+        struct StakingRequestEvent {
+            pool_id: ID,
+            validator_address: SuiAddress,
+            staker_address: SuiAddress,
+            epoch: u64,
+            amount: u64,
+        }
+
+        let staking_event = StakingRequestEvent {
+            pool_id: pool_id_for_event,
+            validator_address: validator,
+            staker_address: tx_ctx.borrow().sender(),
+            epoch: current_epoch,
+            amount: stake_amount,
+        };
+
+        // Serialize the event to BCS bytes
+        let event_contents = bcs::to_bytes(&staking_event).map_err(|e| {
+            ExecutionError::new_with_source(
+                ExecutionErrorKind::InvariantViolation,
+                format!("Failed to serialize StakingRequestEvent: {:?}", e),
+            )
+        })?;
+
+        // Create the event StructTag: 0x3::validator::StakingRequestEvent
+        let event_type = StructTag {
+            address: SUI_SYSTEM_ADDRESS,
+            module: ident_str!("validator").to_owned(),
+            name: ident_str!("StakingRequestEvent").to_owned(),
+            type_params: vec![],
+        };
+
+        // Create and add the event
+        let event = Event::new(
+            &SUI_SYSTEM_ADDRESS.into(),
+            ident_str!("validator"),
+            tx_ctx.borrow().sender(),
+            event_type,
+            event_contents,
+        );
+
+        temporary_store.add_user_event(event);
+
         Ok(())
     }
 
@@ -782,6 +1100,31 @@ mod checked {
                     recipients,
                     amounts,
                     tx_ctx.clone(),
+                )
+                .map_err(|e| (e, vec![]))?;
+                Ok((Mode::empty_results(), vec![]))
+            }
+            TransactionKind::DelegateStakingNative(DelegateStakingNative {
+                coins,
+                validator,
+                amount,
+            }) => {
+                let mut coin_objects: Vec<Object> =  // unwrap is safe because we built the object map from the transaction
+                    coins.iter().map(|c|
+                    temporary_store
+                        .objects()
+                        .get(&c.0)
+                        .unwrap()
+                        .clone()
+                    ).collect();
+                delegate_staking_native(
+                    temporary_store,
+                    store,
+                    &mut coin_objects,
+                    validator,
+                    amount,
+                    tx_ctx.clone(),
+                    protocol_config,
                 )
                 .map_err(|e| (e, vec![]))?;
                 Ok((Mode::empty_results(), vec![]))

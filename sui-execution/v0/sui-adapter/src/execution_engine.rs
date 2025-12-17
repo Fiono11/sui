@@ -392,6 +392,7 @@ mod checked {
     ) -> Result<Mode::ExecutionResults, ExecutionError> {
         match transaction_kind {
             TransactionKind::PaySuiNative(_) => todo!(),
+            TransactionKind::DelegateStakingNative(_) => todo!(),
             TransactionKind::ChangeEpoch(change_epoch) => {
                 advance_epoch(
                     change_epoch,

@@ -12,6 +12,7 @@ use sui_types::committee::EpochId;
 use sui_types::deny_list_v2::check_coin_deny_list_v2_during_execution;
 use sui_types::effects::{AccumulatorWriteV1, TransactionEffects, TransactionEvents};
 use sui_types::error::ExecutionErrorKind;
+use sui_types::event::Event;
 use sui_types::execution::{
     DynamicallyLoadedObjectMetadata, ExecutionResults, ExecutionResultsV2, SharedInput,
 };
@@ -548,6 +549,11 @@ impl<'backing> TemporaryStore<'backing> {
     /// Add an accumulator event to the execution results
     pub fn add_accumulator_event(&mut self, event: AccumulatorEvent) {
         self.execution_results.accumulator_events.push(event);
+    }
+
+    /// Add a user event to the execution results
+    pub fn add_user_event(&mut self, event: Event) {
+        self.execution_results.user_events.push(event);
     }
 
     /// Given an object ID, if it's not modified, returns None.
