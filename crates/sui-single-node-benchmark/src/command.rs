@@ -131,6 +131,24 @@ pub enum WorkloadKind {
             Otherwise, batch via a PTB with multiple commands"
         )]
         use_batch_mint: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "If true, only use PaySuiNative transactions instead of PTB transactions"
+        )]
+        use_pay_sui_native: bool,
+        #[arg(
+            long,
+            default_value_t = 1,
+            help = "Number of recipients per PaySuiNative transaction (only used when --use-pay-sui-native is true)"
+        )]
+        num_recipients: u64,
+        #[arg(
+            long,
+            default_value_t = 1000,
+            help = "Amount per recipient in PaySuiNative transaction, in MIST (only used when --use-pay-sui-native is true)"
+        )]
+        amount_per_recipient: u64,
     },
     Publish {
         #[arg(
@@ -150,7 +168,22 @@ impl WorkloadKind {
     pub(crate) fn gas_object_num_per_account(&self) -> u64 {
         match self {
             // Each transaction will always have 1 gas object, plus the number of owned objects that will be transferred.
-            WorkloadKind::PTB { num_transfers, .. } => *num_transfers + 1,
+            // For PaySuiNative, we need at least 1 coin (used as gas), but can use more for payments.
+            // We'll use 1 coin per recipient + 1 for gas to ensure we have enough coins.
+            WorkloadKind::PTB { 
+                num_transfers, 
+                use_pay_sui_native,
+                num_recipients,
+                ..
+            } => {
+                if *use_pay_sui_native {
+                    // For PaySuiNative: at least 1 coin for gas, plus ideally 1 coin per recipient
+                    // But we can also use fewer coins and merge them, so let's use max(1, num_recipients + 1)
+                    (*num_recipients + 1).max(1)
+                } else {
+                    *num_transfers + 1
+                }
+            },
             WorkloadKind::Publish { .. } => 1,
         }
     }

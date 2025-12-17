@@ -3,7 +3,7 @@
 
 use crate::benchmark_context::BenchmarkContext;
 use crate::command::WorkloadKind;
-use crate::tx_generator::{MoveTxGenerator, PackagePublishTxGenerator, TxGenerator};
+use crate::tx_generator::{MoveTxGenerator, PackagePublishTxGenerator, PaySuiNativeTxGenerator, TxGenerator};
 use std::path::PathBuf;
 use std::sync::Arc;
 use sui_test_transaction_builder::PublishData;
@@ -44,27 +44,37 @@ impl Workload {
                 num_mints,
                 nft_size,
                 use_batch_mint,
+                use_pay_sui_native,
+                num_recipients,
+                amount_per_recipient,
             } => {
-                let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-                path.extend(["move_package"]);
-                let move_package = ctx.publish_package(PublishData::Source(path, false)).await;
-                let root_objects = ctx
-                    .preparing_dynamic_fields(move_package.0, *num_dynamic_fields)
-                    .await;
-                let shared_objects = ctx
-                    .prepare_shared_objects(move_package.0, *num_shared_objects)
-                    .await;
-                Arc::new(MoveTxGenerator::new(
-                    move_package.0,
-                    *num_transfers,
-                    *use_native_transfer,
-                    *computation,
-                    root_objects,
-                    shared_objects,
-                    *num_mints,
-                    *nft_size,
-                    *use_batch_mint,
-                ))
+                if *use_pay_sui_native {
+                    Arc::new(PaySuiNativeTxGenerator::new(
+                        *num_recipients,
+                        *amount_per_recipient,
+                    ))
+                } else {
+                    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                    path.extend(["move_package"]);
+                    let move_package = ctx.publish_package(PublishData::Source(path, false)).await;
+                    let root_objects = ctx
+                        .preparing_dynamic_fields(move_package.0, *num_dynamic_fields)
+                        .await;
+                    let shared_objects = ctx
+                        .prepare_shared_objects(move_package.0, *num_shared_objects)
+                        .await;
+                    Arc::new(MoveTxGenerator::new(
+                        move_package.0,
+                        *num_transfers,
+                        *use_native_transfer,
+                        *computation,
+                        root_objects,
+                        shared_objects,
+                        *num_mints,
+                        *nft_size,
+                        *use_batch_mint,
+                    ))
+                }
             }
             WorkloadKind::Publish {
                 manifest_file: manifest_path,

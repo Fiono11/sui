@@ -19,6 +19,9 @@ of the execution engine:
 - `--use-native-transfer`: this is false by default, which means we use Move call to transfer objects. When specified, we will use the native TransferObject command without invoking Move to transfer objects.
 - `--num-dynamic-fields`: this specifies number of dynamic fields read by each transaction. Default to 0.
 - `--computation`: this specifies computation intensity. An increase by 1 means 100 more loop iterations in Fibonacci computation. Default to 0.
+- `--use-pay-sui-native`: if true, only use PaySuiNative transactions instead of PTB transactions. Default to false.
+- `--num-recipients`: number of recipients per PaySuiNative transaction (only used when `--use-pay-sui-native` is true). Default to 1.
+- `--amount-per-recipient`: amount per recipient in PaySuiNative transaction, in MIST (only used when `--use-pay-sui-native` is true). Default to 1000.
 
 ### Publish benchmark workloads
 WIP (please refer to smoke_tests to see how its setup)
