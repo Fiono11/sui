@@ -2092,6 +2092,7 @@ impl From<crate::transaction::TransactionKind> for TransactionKind {
 
         match value {
             K::PaySuiNative(_) => unimplemented!(),
+            K::DelegateStakingNative(_) => unimplemented!(),
             K::ProgrammableTransaction(ptb) => message
                 .with_programmable_transaction(ptb)
                 .with_kind(Kind::ProgrammableTransaction),

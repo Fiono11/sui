@@ -113,6 +113,24 @@ pub struct PaySuiNative {
     pub amounts: Vec<u64>,
 }
 
+/// Delegate stake to a validator using SUI coins natively.
+/// This is a native implementation that does not require Move VM execution.
+/// It performs the following operations:
+/// 1. Merges all input coins into a single balance
+/// 2. Finds the validator in the active validator set
+/// 3. Adds the stake to the validator's staking pool as pending stake
+/// 4. Updates the validator's next_epoch_stake
+/// 5. Creates a StakedSui object and transfers it to the sender
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
+pub struct DelegateStakingNative {
+    /// The coins to be used for staking.
+    pub coins: Vec<ObjectRef>,
+    /// The validator address to stake to
+    pub validator: SuiAddress,
+    /// Optional amount to stake. If None, stake the entire balance of all coins.
+    pub amount: Option<u64>,
+}
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
 pub enum CallArg {
     // contains no structs or objects
@@ -466,6 +484,8 @@ pub enum TransactionKind {
     /// Pay multiple recipients using multiple SUI coins,
     /// no extra gas payment SUI coin is required.
     PaySuiNative(PaySuiNative),
+    /// Delegate stake to a validator natively, without Move VM execution.
+    DelegateStakingNative(DelegateStakingNative),
     /// A transaction that allows the interleaving of native commands and Move calls
     ProgrammableTransaction(ProgrammableTransaction),
     /// A system transaction that will update epoch information on-chain.
@@ -1514,7 +1534,8 @@ impl TransactionKind {
             | TransactionKind::RandomnessStateUpdate(_)
             | TransactionKind::EndOfEpochTransaction(_)
             | TransactionKind::ProgrammableSystemTransaction(_)
-            | TransactionKind::PaySuiNative(_) => true,
+            | TransactionKind::PaySuiNative(_)
+            | TransactionKind::DelegateStakingNative(_) => true,
             TransactionKind::ProgrammableTransaction(_) => false,
         }
     }
@@ -1551,7 +1572,7 @@ impl TransactionKind {
     /// It covers both Call and ChangeEpoch transaction kind, because both makes Move calls.
     pub fn shared_input_objects(&self) -> impl Iterator<Item = SharedInputObject> + '_ {
         match &self {
-            Self::ChangeEpoch(_) => {
+            Self::ChangeEpoch(_) | Self::DelegateStakingNative(_) => {
                 Either::Left(Either::Left(iter::once(SharedInputObject::SUI_SYSTEM_OBJ)))
             }
 
@@ -1600,6 +1621,7 @@ impl TransactionKind {
         match &self {
             TransactionKind::ChangeEpoch(_)
             | TransactionKind::PaySuiNative(_)
+            | TransactionKind::DelegateStakingNative(_)
             | TransactionKind::Genesis(_)
             | TransactionKind::ConsensusCommitPrologue(_)
             | TransactionKind::ConsensusCommitPrologueV2(_)
@@ -1623,6 +1645,19 @@ impl TransactionKind {
                 .iter()
                 .map(|o| InputObjectKind::ImmOrOwnedMoveObject(*o))
                 .collect(),
+            Self::DelegateStakingNative(DelegateStakingNative { coins, .. }) => {
+                let mut inputs: Vec<InputObjectKind> = coins
+                    .iter()
+                    .map(|o| InputObjectKind::ImmOrOwnedMoveObject(*o))
+                    .collect();
+                // Also need the system state object to modify validator staking pool
+                inputs.push(InputObjectKind::SharedMoveObject {
+                    id: SUI_SYSTEM_STATE_OBJECT_ID,
+                    initial_shared_version: SUI_SYSTEM_STATE_OBJECT_SHARED_VERSION,
+                    mutability: SharedObjectMutability::Mutable,
+                });
+                inputs
+            }
             Self::ChangeEpoch(_) => {
                 vec![InputObjectKind::SharedMoveObject {
                     id: SUI_SYSTEM_STATE_OBJECT_ID,
@@ -1705,12 +1740,10 @@ impl TransactionKind {
     pub fn validity_check(&self, config: &ProtocolConfig) -> UserInputResult {
         match self {
             TransactionKind::PaySuiNative(p) => {
-                //fp_ensure!(!p.coins.is_empty(), SuiError::EmptyInputCoins);
-                //fp_ensure!(
-                // unwrap() is safe because coins are not empty.
-                //p.coins.first().unwrap() == gas_payment,
-                //SuiError::UnexpectedGasPaymentObject
-                //);
+                fp_ensure!(!p.coins.is_empty(), UserInputError::EmptyInputCoins);
+            }
+            TransactionKind::DelegateStakingNative(d) => {
+                fp_ensure!(!d.coins.is_empty(), UserInputError::EmptyInputCoins);
             }
             TransactionKind::ProgrammableTransaction(p) => p.validity_check(config)?,
             // All transactiond kinds below are assumed to be system,
@@ -1802,6 +1835,7 @@ impl TransactionKind {
     pub fn name(&self) -> &'static str {
         match self {
             Self::PaySuiNative(_) => "PaySui",
+            Self::DelegateStakingNative(_) => "DelegateStakingNative",
             Self::ChangeEpoch(_) => "ChangeEpoch",
             Self::Genesis(_) => "Genesis",
             Self::ConsensusCommitPrologue(_) => "ConsensusCommitPrologue",
@@ -1836,6 +1870,21 @@ impl Display for TransactionKind {
                 writeln!(writer, "Amounts:")?;
                 for amount in &p.amounts {
                     writeln!(writer, "{}", amount)?
+                }
+            }
+            Self::DelegateStakingNative(d) => {
+                writeln!(writer, "Transaction Kind : Delegate Staking")?;
+                writeln!(writer, "Coins:")?;
+                for (object_id, seq, digest) in &d.coins {
+                    writeln!(writer, "Object ID : {}", &object_id)?;
+                    writeln!(writer, "Sequence Number : {:?}", seq)?;
+                    writeln!(writer, "Object Digest : {}", digest)?;
+                }
+                writeln!(writer, "Validator : {}", d.validator)?;
+                if let Some(amount) = d.amount {
+                    writeln!(writer, "Amount : {}", amount)?;
+                } else {
+                    writeln!(writer, "Amount : All")?;
                 }
             }
             Self::ChangeEpoch(e) => {
@@ -1988,6 +2037,35 @@ impl TransactionData {
             amounts,
         });
         Self::new(kind, sender, gas_payment, gas_budget, gas_price)
+    }
+
+    pub fn new_delegate_staking_native(
+        sender: SuiAddress,
+        coins: Vec<ObjectRef>,
+        validator: SuiAddress,
+        amount: Option<u64>,
+        gas_payment: ObjectRef,
+        gas_budget: u64,
+        gas_price: u64,
+    ) -> Self {
+        let kind = TransactionKind::DelegateStakingNative(DelegateStakingNative {
+            coins,
+            validator,
+            amount,
+        });
+        // For system transactions, use dummy gas object like other system transactions
+        // This avoids requiring a real gas object for validation
+        TransactionData::V1(TransactionDataV1 {
+            kind,
+            sender,
+            gas_data: GasData {
+                price: GAS_PRICE_FOR_SYSTEM_TX,
+                owner: sender,
+                payment: vec![(ObjectID::ZERO, SequenceNumber::default(), ObjectDigest::MIN)],
+                budget: 0,
+            },
+            expiration: TransactionExpiration::None,
+        })
     }
 
     fn new_system_transaction(kind: TransactionKind) -> Self {
@@ -2867,6 +2945,7 @@ impl TransactionDataAPI for TransactionDataV1 {
 
             TransactionKind::ProgrammableTransaction(_)
             | TransactionKind::PaySuiNative(_)
+            | TransactionKind::DelegateStakingNative(_)
             | TransactionKind::ProgrammableSystemTransaction(_)
             | TransactionKind::ChangeEpoch(_)
             | TransactionKind::Genesis(_)
@@ -3150,10 +3229,14 @@ impl SenderSignedData {
         // TODO: The following checks can be moved to TransactionData, if we pass context into it.
 
         // CRITICAL!!
-        // Users cannot send system transactions, except PaySui transactions.
+        // Users cannot send system transactions, except PaySui and DelegateStakingNative transactions.
         let tx_data = &self.transaction_data();
         fp_ensure!(
-            !tx_data.is_system_tx() || matches!(tx_data.kind(), TransactionKind::PaySuiNative(_)),
+            !tx_data.is_system_tx()
+                || matches!(
+                    tx_data.kind(),
+                    TransactionKind::PaySuiNative(_) | TransactionKind::DelegateStakingNative(_)
+                ),
             SuiErrorKind::UserInputError {
                 error: UserInputError::Unsupported(
                     "SenderSignedData must not contain system transaction".to_string()

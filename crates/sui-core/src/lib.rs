@@ -61,6 +61,9 @@ mod congestion_control_tests;
 #[path = "unit_tests/consensus_test_utils.rs"]
 pub mod consensus_test_utils;
 #[cfg(test)]
+#[path = "unit_tests/delegate_staking_native_tests.rs"]
+mod delegate_staking_native_tests;
+#[cfg(test)]
 #[path = "unit_tests/move_package_publish_tests.rs"]
 mod move_package_publish_tests;
 #[cfg(test)]

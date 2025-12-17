@@ -2050,6 +2050,7 @@ impl CheckpointBuilder {
                     TransactionKind::PaySuiNative(_) => {
                         // TODO
                     }
+                    TransactionKind::DelegateStakingNative(_) => {}
                 }
                 transactions.push(transaction);
                 all_effects_and_transaction_sizes.push((effects, size));
