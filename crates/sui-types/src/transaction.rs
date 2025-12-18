@@ -1212,6 +1212,24 @@ pub fn write_sep<T: Display>(
 }
 
 impl ProgrammableTransaction {
+    /// Return true if the given `Argument` is considered "GasCoin-derived" for the purposes of
+    /// restricting programmable transactions to SUI-only coin operations.
+    ///
+    /// We treat as GasCoin-derived:
+    /// - `Argument::GasCoin` itself, and
+    /// - `Argument::NestedResult(cmd_idx, ..)` where `cmd_idx` refers to a prior `SplitCoins`
+    ///   command whose input coin was GasCoin-derived (tracked in `split_result_is_gas_vec`).
+    fn is_gas_derived_argument(arg: &Argument, split_result_is_gas_vec: &[bool]) -> bool {
+        match arg {
+            Argument::GasCoin => true,
+            Argument::NestedResult(cmd_idx, _inner_idx) => {
+                let idx = *cmd_idx as usize;
+                idx < split_result_is_gas_vec.len() && split_result_is_gas_vec[idx]
+            }
+            _ => false,
+        }
+    }
+
     pub fn input_objects(&self) -> UserInputResult<Vec<InputObjectKind>> {
         let ProgrammableTransaction { inputs, commands } = self;
         let input_arg_objects = inputs
@@ -1275,8 +1293,83 @@ impl ProgrammableTransaction {
                 }
             );
         }
-        for command in commands {
+
+        // Restrict programmable transactions on this network to coin-related primitives only,
+        // and further ensure those primitives only operate on GasCoin-derived arguments.
+        //
+        // Concretely we only allow the following commands:
+        // - TransferObjects
+        // - SplitCoins
+        // - MergeCoins
+        //
+        // and we require that all "coin" arguments to these commands are either:
+        // - `Argument::GasCoin`, or
+        // - `Argument::NestedResult(cmd_idx, ..)` referring to a prior `SplitCoins` whose input
+        //   coin was GasCoin-derived.
+        //
+        // This approximates "SUI-only" PTBs without needing full type information.
+        let mut split_result_is_gas_vec: Vec<bool> = vec![false; commands.len()];
+
+        for (idx, command) in commands.iter().enumerate() {
+            // Existing per-command validity checks.
             command.validity_check(config)?;
+
+            match command {
+                Command::TransferObjects(objs, _recipient) => {
+                    // All transferred objects must be GasCoin-derived.
+                    for arg in objs {
+                        fp_ensure!(
+                            Self::is_gas_derived_argument(arg, &split_result_is_gas_vec),
+                            UserInputError::Unsupported(
+                                "TransferObjects is restricted to GasCoin-derived arguments \
+                                 (GasCoin or coins produced by splitting GasCoin)"
+                                    .to_string(),
+                            )
+                        );
+                    }
+                }
+                Command::SplitCoins(coin_arg, _amounts) => {
+                    // SplitCoins can only operate on GasCoin-derived coins.
+                    fp_ensure!(
+                        Self::is_gas_derived_argument(coin_arg, &split_result_is_gas_vec),
+                        UserInputError::Unsupported(
+                            "SplitCoins is restricted to GasCoin-derived arguments \
+                             (GasCoin or coins produced by splitting GasCoin)"
+                                .to_string(),
+                        )
+                    );
+                    // The result of this SplitCoins produces GasCoin-derived coins.
+                    split_result_is_gas_vec[idx] = true;
+                }
+                Command::MergeCoins(target, sources) => {
+                    // MergeCoins can only operate on GasCoin-derived coins.
+                    fp_ensure!(
+                        Self::is_gas_derived_argument(target, &split_result_is_gas_vec),
+                        UserInputError::Unsupported(
+                            "MergeCoins target is restricted to GasCoin-derived arguments \
+                             (GasCoin or coins produced by splitting GasCoin)"
+                                .to_string(),
+                        )
+                    );
+                    for arg in sources {
+                        fp_ensure!(
+                            Self::is_gas_derived_argument(arg, &split_result_is_gas_vec),
+                            UserInputError::Unsupported(
+                                "MergeCoins sources are restricted to GasCoin-derived arguments \
+                                 (GasCoin or coins produced by splitting GasCoin)"
+                                    .to_string(),
+                            )
+                        );
+                    }
+                }
+                _ => {
+                    return Err(UserInputError::Unsupported(
+                        "programmable transaction commands are restricted to GasCoin-based \
+                         coin operations (TransferObjects, SplitCoins, MergeCoins)"
+                            .to_string(),
+                    ));
+                }
+            }
         }
 
         // If randomness is used, it must be enabled by protocol config.

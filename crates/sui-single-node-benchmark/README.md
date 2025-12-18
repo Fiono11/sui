@@ -19,6 +19,13 @@ of the execution engine:
 - `--use-native-transfer`: this is false by default, which means we use Move call to transfer objects. When specified, we will use the native TransferObject command without invoking Move to transfer objects.
 - `--num-dynamic-fields`: this specifies number of dynamic fields read by each transaction. Default to 0.
 - `--computation`: this specifies computation intensity. An increase by 1 means 100 more loop iterations in Fibonacci computation. Default to 0.
+- `--coin-ops-only`: when set, restricts the PTB workload to coin-only operations (TransferObjects, SplitCoins, MergeCoins). This automatically uses native transfers and disables additional Move-call based workload such as dynamic fields, computation, and NFT minting.
+
+For example, to benchmark coin-only PTBs that are compatible with configurations restricting programmable transactions to coin operations, you can run:
+
+```bash
+cargo run --release --bin sui-single-node-benchmark -- ptb --num-transfers 1 --coin-ops-only
+```
 
 ### Publish benchmark workloads
 WIP (please refer to smoke_tests to see how its setup)

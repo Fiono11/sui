@@ -2643,21 +2643,25 @@ impl ProtocolConfig {
             object_runtime_max_num_cached_objects_system_tx: Some(1000 * 16),
             object_runtime_max_num_store_entries: Some(1000),
             object_runtime_max_num_store_entries_system_tx: Some(1000 * 16),
-            base_tx_cost_fixed: Some(110_000),
-            package_publish_cost_fixed: Some(1_000),
+            // Make base transaction and publish costs effectively free.
+            base_tx_cost_fixed: Some(0),
+            package_publish_cost_fixed: Some(0),
             base_tx_cost_per_byte: Some(0),
-            package_publish_cost_per_byte: Some(80),
-            obj_access_cost_read_per_byte: Some(15),
-            obj_access_cost_mutate_per_byte: Some(40),
-            obj_access_cost_delete_per_byte: Some(40),
-            obj_access_cost_verify_per_byte: Some(200),
-            obj_data_cost_refundable: Some(100),
-            obj_metadata_cost_non_refundable: Some(50),
+            package_publish_cost_per_byte: Some(0),
+            // Make object access and verification costs effectively free.
+            obj_access_cost_read_per_byte: Some(0),
+            obj_access_cost_mutate_per_byte: Some(0),
+            obj_access_cost_delete_per_byte: Some(0),
+            obj_access_cost_verify_per_byte: Some(0),
+            // Make per-byte storage cost effectively free.
+            obj_data_cost_refundable: Some(0),
+            obj_metadata_cost_non_refundable: Some(0),
             gas_model_version: Some(1),
             storage_rebate_rate: Some(9900),
             storage_fund_reinvest_rate: Some(500),
             reward_slashing_rate: Some(5000),
-            storage_gas_price: Some(1),
+            // Setting storage_gas_price to 0 ensures no storage gas is charged.
+            storage_gas_price: Some(0),
             max_transactions_per_checkpoint: Some(10_000),
             max_checkpoint_size_bytes: Some(30 * 1024 * 1024),
 
@@ -3023,10 +3027,10 @@ impl ProtocolConfig {
                     cfg.gas_model_version = Some(2);
                     // max gas budget is in MIST and an absolute value 50SUI
                     cfg.max_tx_gas = Some(50_000_000_000);
-                    // min gas budget is in MIST and an absolute value 2000MIST or 0.000002SUI
-                    cfg.base_tx_cost_fixed = Some(2_000);
+                    // Make base transaction cost and storage gas effectively free.
+                    cfg.base_tx_cost_fixed = Some(0);
                     // storage gas price multiplier
-                    cfg.storage_gas_price = Some(76);
+                    cfg.storage_gas_price = Some(0);
                     cfg.feature_flags.loaded_child_objects_fixed = true;
                     // max size of written objects during a TXn
                     // this is a sum of all objects written during a TXn
@@ -3120,8 +3124,8 @@ impl ProtocolConfig {
                     // cfg.feature_flags.ban_entry_init = true;
                     // cfg.feature_flags.pack_digest_hash_modules = true;
                     cfg.feature_flags.txn_base_cost_as_multiplier = true;
-                    // this is a multiplier of the gas price
-                    cfg.base_tx_cost_fixed = Some(1_000);
+                    // Keep base transaction cost at 0 even when treated as a multiplier.
+                    cfg.base_tx_cost_fixed = Some(0);
                 }
                 19 => {
                     cfg.max_num_event_emit = Some(1024);

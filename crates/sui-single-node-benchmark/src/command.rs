@@ -131,6 +131,13 @@ pub enum WorkloadKind {
             Otherwise, batch via a PTB with multiple commands"
         )]
         use_batch_mint: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Restrict the PTB workload to coin-only operations (TransferObjects, SplitCoins, MergeCoins).\
+            When set, this disables additional Move-call based workload such as dynamic fields, computation, and NFT minting."
+        )]
+        coin_ops_only: bool,
     },
     Publish {
         #[arg(

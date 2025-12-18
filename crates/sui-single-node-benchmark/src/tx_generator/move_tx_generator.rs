@@ -58,106 +58,120 @@ impl TxGenerator for MoveTxGenerator {
         );
         {
             let builder = tx_builder.ptb_builder_mut();
-            // Step 1: transfer `num_transfers` objects.
-            // First object in the gas_objects is the gas object and we are not transferring it.
-            for i in 1..=self.num_transfers {
-                let object = account.gas_objects[i as usize];
-                if self.use_native_transfer {
-                    builder
-                        .transfer_object(account.sender, FullObjectRef::from_fastpath_ref(object))
-                        .unwrap();
-                } else {
+            // In `coin_ops_only` mode, `Workload` passes a sentinel `move_package` ID of ZERO
+            // and disables all Move-call based workloads. In this mode, we generate only
+            // GasCoin-derived coin operations (SplitCoins + TransferObjects) built from the gas coin.
+            if self.move_package == ObjectID::ZERO {
+                if self.num_transfers > 0 {
+                    let recipients = vec![account.sender; self.num_transfers as usize];
+                    let amounts = vec![1u64; self.num_transfers as usize];
+                    builder.pay_sui(recipients, amounts).unwrap();
+                }
+            } else {
+                // Step 1: transfer `num_transfers` objects.
+                // First object in the gas_objects is the gas object and we are not transferring it.
+                for i in 1..=self.num_transfers {
+                    let object = account.gas_objects[i as usize];
+                    if self.use_native_transfer {
+                        builder
+                            .transfer_object(
+                                account.sender,
+                                FullObjectRef::from_fastpath_ref(object),
+                            )
+                            .unwrap();
+                    } else {
+                        builder
+                            .move_call(
+                                self.move_package,
+                                Identifier::new("benchmark").unwrap(),
+                                Identifier::new("transfer_coin").unwrap(),
+                                vec![],
+                                vec![CallArg::Object(ObjectArg::ImmOrOwnedObject(object))],
+                            )
+                            .unwrap();
+                    }
+                }
+                for shared_object in &self.shared_objects {
                     builder
                         .move_call(
                             self.move_package,
                             Identifier::new("benchmark").unwrap(),
-                            Identifier::new("transfer_coin").unwrap(),
+                            Identifier::new("increment_shared_counter").unwrap(),
                             vec![],
-                            vec![CallArg::Object(ObjectArg::ImmOrOwnedObject(object))],
+                            vec![CallArg::Object(ObjectArg::SharedObject {
+                                id: shared_object.0,
+                                initial_shared_version: shared_object.1,
+                                mutability: SharedObjectMutability::Mutable,
+                            })],
                         )
                         .unwrap();
                 }
-            }
-            for shared_object in &self.shared_objects {
-                builder
-                    .move_call(
-                        self.move_package,
-                        Identifier::new("benchmark").unwrap(),
-                        Identifier::new("increment_shared_counter").unwrap(),
-                        vec![],
-                        vec![CallArg::Object(ObjectArg::SharedObject {
-                            id: shared_object.0,
-                            initial_shared_version: shared_object.1,
-                            mutability: SharedObjectMutability::Mutable,
-                        })],
-                    )
-                    .unwrap();
-            }
 
-            if !self.root_objects.is_empty() {
-                // Step 2: Read all dynamic fields from the root object.
-                let root_object = self.root_objects.get(&account.sender).unwrap();
-                let root_object_arg = builder
-                    .obj(ObjectArg::ImmOrOwnedObject(*root_object))
-                    .unwrap();
-                builder.programmable_move_call(
-                    self.move_package,
-                    Identifier::new("benchmark").unwrap(),
-                    Identifier::new("read_dynamic_fields").unwrap(),
-                    vec![],
-                    vec![root_object_arg],
-                );
-            }
-
-            if self.computation > 0 {
-                // Step 3: Run some computation.
-                let computation_arg = builder.pure(self.computation as u64 * 100).unwrap();
-                builder.programmable_move_call(
-                    self.move_package,
-                    Identifier::new("benchmark").unwrap(),
-                    Identifier::new("run_computation").unwrap(),
-                    vec![],
-                    vec![computation_arg],
-                );
-            }
-            if self.num_mints > 0 {
-                // Step 4: Mint some NFTs
-                let mut contents = Vec::new();
-                assert!(self.nft_size >= 32, "NFT size must be at least 32 bytes");
-                for _ in 0..self.nft_size - 32 {
-                    contents.push(7u8)
-                }
-                if self.use_batch_mint {
-                    // create a vector of sender addresses to pass to batch_mint
-                    let mut recipients = Vec::new();
-                    for _ in 0..self.num_mints {
-                        recipients.push(account.sender)
-                    }
-                    let args = vec![
-                        builder.pure(recipients).unwrap(),
-                        builder.pure(contents).unwrap(),
-                    ];
+                if !self.root_objects.is_empty() {
+                    // Step 2: Read all dynamic fields from the root object.
+                    let root_object = self.root_objects.get(&account.sender).unwrap();
+                    let root_object_arg = builder
+                        .obj(ObjectArg::ImmOrOwnedObject(*root_object))
+                        .unwrap();
                     builder.programmable_move_call(
                         self.move_package,
                         Identifier::new("benchmark").unwrap(),
-                        Identifier::new("batch_mint").unwrap(),
+                        Identifier::new("read_dynamic_fields").unwrap(),
                         vec![],
-                        args,
+                        vec![root_object_arg],
                     );
-                } else {
-                    // create PTB with a command that transfers each
-                    for _ in 0..self.num_mints {
+                }
+
+                if self.computation > 0 {
+                    // Step 3: Run some computation.
+                    let computation_arg = builder.pure(self.computation as u64 * 100).unwrap();
+                    builder.programmable_move_call(
+                        self.move_package,
+                        Identifier::new("benchmark").unwrap(),
+                        Identifier::new("run_computation").unwrap(),
+                        vec![],
+                        vec![computation_arg],
+                    );
+                }
+                if self.num_mints > 0 {
+                    // Step 4: Mint some NFTs
+                    let mut contents = Vec::new();
+                    assert!(self.nft_size >= 32, "NFT size must be at least 32 bytes");
+                    for _ in 0..self.nft_size - 32 {
+                        contents.push(7u8)
+                    }
+                    if self.use_batch_mint {
+                        // create a vector of sender addresses to pass to batch_mint
+                        let mut recipients = Vec::new();
+                        for _ in 0..self.num_mints {
+                            recipients.push(account.sender)
+                        }
                         let args = vec![
-                            builder.pure(account.sender).unwrap(),
-                            builder.pure(contents.clone()).unwrap(),
+                            builder.pure(recipients).unwrap(),
+                            builder.pure(contents).unwrap(),
                         ];
                         builder.programmable_move_call(
                             self.move_package,
                             Identifier::new("benchmark").unwrap(),
-                            Identifier::new("mint_one").unwrap(),
+                            Identifier::new("batch_mint").unwrap(),
                             vec![],
                             args,
                         );
+                    } else {
+                        // create PTB with a command that transfers each
+                        for _ in 0..self.num_mints {
+                            let args = vec![
+                                builder.pure(account.sender).unwrap(),
+                                builder.pure(contents.clone()).unwrap(),
+                            ];
+                            builder.programmable_move_call(
+                                self.move_package,
+                                Identifier::new("benchmark").unwrap(),
+                                Identifier::new("mint_one").unwrap(),
+                                vec![],
+                                args,
+                            );
+                        }
                     }
                 }
             }
